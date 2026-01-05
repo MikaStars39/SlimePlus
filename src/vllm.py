@@ -1,4 +1,6 @@
 import argparse
+import asyncio
+import json
 import logging
 import os
 import signal
@@ -8,8 +10,21 @@ import threading
 import time
 import urllib.request
 import aiohttp
-from typing import List, Tuple, Iterable
+from typing import List, Tuple, Iterable, Dict, Any, Set
 from pathlib import Path
+from src.utils import load_dataset_from_hf, prepare_prompt, ProgressVisualizer, StageContext
+
+
+PROMPT_TEMPLATES = {
+    "lighteval": """{problem} Please reason step by step, and put your final answer within \\boxed{{}}.""",
+    "open-r1": """
+Solve the following math problem step by step. The last line of your response should be of the form Answer: $Answer (without quotes) where $Answer is the answer to the problem.
+
+{problem}
+
+Remember to put your answer on its own line after "Answer:".
+""".strip(),
+}
 
 
 def extract_vllm_args(unknown: List[str]) -> Tuple[List[str], List[str]]:
@@ -207,3 +222,134 @@ async def generate_with_vllm_async(
         return content["choices"][0]["message"]["content"]
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(f"Failed to parse vLLM response: {content}") from exc
+
+
+async def generate_responses(
+    args: argparse.Namespace,
+    dataset_name: str,
+    rollout_n: int,
+    ports: List[int],
+    logger: logging.Logger,
+    semaphores: Dict[int, asyncio.Semaphore],
+) -> None:
+    """
+    Asynchronously generate responses and save to output.jsonl.
+    Implementation: Read existing output.jsonl to build cache, only generate missing entries.
+    Generated results are appended to output.jsonl in real-time.
+    """
+    dataset_dir = Path(args.result_dir) / dataset_name
+    output_file = dataset_dir / "output.jsonl"
+    dataset_dir.mkdir(parents=True, exist_ok=True)
+
+    with StageContext(logger, f"C.1[{dataset_name}]", "Reading cached output"):
+        generated_results: List[Dict[str, Any]] = []
+        cache: Set[Tuple[int, int]] = set()
+
+        if output_file.exists():
+            with output_file.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                        if (
+                            "problem_id" in data
+                            and "rollout_id" in data
+                            and "response" in data
+                            and data["response"] != ""
+                            and int(data["rollout_id"]) < rollout_n
+                        ):
+                            generated_results.append(data)
+                            cache.add((data["problem_id"], data["rollout_id"]))
+                    except json.JSONDecodeError:
+                        logger.warning("Invalid JSON line in output.jsonl, skipped.")
+
+        logger.info("Loaded cache entries: %d", len(generated_results))
+
+    with StageContext(logger, f"C.2[{dataset_name}]", "Preparing generation tasks"):
+        ds = load_dataset_from_hf(dataset_name, args.cache_dir)
+        # max_concurrent_per_dp and semaphores are now handled externally and passed in
+
+        tasks_to_process: List[Tuple[int, int, str, int]] = []
+        ports_cycle = len(ports)
+
+        prompt_template = PROMPT_TEMPLATES[args.prompt_format]
+
+        for idx, sample in enumerate(ds):
+            prompt = prepare_prompt(dataset_name, sample, prompt_template)
+            for rollout_id in range(rollout_n):
+                if (idx, rollout_id) in cache:
+                    continue
+                # port_idx = idx % ports_cycle
+                port_idx = (idx * rollout_n + rollout_id) % ports_cycle
+                tasks_to_process.append((idx, rollout_id, prompt, port_idx))
+
+        logger.info("New requests to generate: %d", len(tasks_to_process))
+
+        visualizer = ProgressVisualizer(
+            dataset_dir / "process.txt", len(ds), rollout_n, cache
+        )
+
+        if not tasks_to_process:
+            logger.info("All requests exist in cache, no generation needed.")
+            visualizer.cleanup()
+            return
+
+    with StageContext(logger, f"C.3[{dataset_name}]", "Parallel Generation"):
+        file_lock = asyncio.Lock()
+
+        async def generate_one_task(
+            problem_id: int,
+            rollout_id: int,
+            prompt: str,
+            port_idx: int,
+            session: aiohttp.ClientSession,
+        ) -> None:
+            port = ports[port_idx]
+            semaphore = semaphores[port]
+            response = ""
+
+            async with semaphore:
+                try:
+                    response = await generate_with_vllm_async(
+                        session, prompt, port, args
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Generation failed problem=%06d rollout=%03d port=%d: %s",
+                        problem_id,
+                        rollout_id,
+                        port,
+                        exc,
+                    )
+                    return
+
+            record = {
+                "problem_id": problem_id,
+                "rollout_id": rollout_id,
+                "response": response,
+            }
+
+            generated_results.append(record)
+
+            async with file_lock:
+                with output_file.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+            await visualizer.update(problem_id, rollout_id)
+
+        connector = aiohttp.TCPConnector(limit=0, limit_per_host=0)
+        async with aiohttp.ClientSession(connector=connector) as session:
+            tasks = [
+                generate_one_task(pid, rid, pmt, pidx, session)
+                for pid, rid, pmt, pidx in tasks_to_process
+            ]
+            await asyncio.gather(*tasks)
+            visualizer.cleanup()
+
+        logger.info(
+            "Dataset %s generation complete, results saved to %s",
+            dataset_name,
+            output_file,
+        )

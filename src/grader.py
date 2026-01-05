@@ -8,7 +8,7 @@ import re
 from pylatexenc import latex2text
 import sympy
 from sympy.parsing import sympy_parser
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Any
 
 
 # Dan Hendrycks' code
@@ -531,6 +531,24 @@ def grade_answer_perl(solution_str: str, ground_truth: str) -> Tuple[float, floa
             return grade_extracted_answer_perl(given_answer, ground_truth), 1.0
 
     return 0.0, 0.0
+
+
+def score_response(
+    dataset_name: str, response: str, sample: Dict[str, Any]
+) -> Tuple[float, float]:
+    """
+    Returns:
+      - score: float, score of the response
+      - format_score: float, score of the response format
+    """
+    ground_truth = None
+    if "answer" in sample:
+        ground_truth = sample["answer"]
+    elif "label" in sample:
+        ground_truth = sample["label"]
+    else:
+        raise ValueError(f"Unsupported sample format: {sample}")
+    return grade_answer_perl(response, str(ground_truth))
 
 
 def main():

@@ -13,92 +13,33 @@ from typing import Dict, List, Tuple, Set, Any
 from datasets import load_dataset
 import aiohttp
 
-from src.utils import StageContext, setup_logging, merge_model_if_needed
+from src.utils import (
+    StageContext, 
+    setup_logging, 
+    merge_model_if_needed, 
+    load_dataset_from_hf, 
+    prepare_prompt, 
+)
 from src.vllm import (
     extract_vllm_args,
     start_vllm_processes,
     stop_vllm_processes,
     wait_for_vllm_ready,
     generate_with_vllm_async,
+    generate_responses,
+    PROMPT_TEMPLATES,
 )
-from src.grader import grade_answer_perl
-
-
-PROMPT_TEMPLATES = {
-    "lighteval": """{problem} Please reason step by step, and put your final answer within \\boxed{{}}.""",
-    "open-r1": """
-Solve the following math problem step by step. The last line of your response should be of the form Answer: $Answer (without quotes) where $Answer is the answer to the problem.
-
-{problem}
-
-Remember to put your answer on its own line after "Answer:".
-""".strip(),
-}
-
-DATASETS = {
-    "aime2024": ("HuggingFaceH4/aime_2024", "train"),
-    "aime2025": ("yentinglin/aime_2025", "train"),
-    "amc2023": ("zwhe99/amc23", "test"),
-    "math500": ("HuggingFaceH4/MATH-500", "test"),
-    "minerva": ("math-ai/minervamath", "test"),
-    "hmmt2025": ("FlagEval/HMMT_2025", "train"),
-}
-
-
-def load_dataset_from_hf(dataset_name: str, cache_dir: str = None):
-    if dataset_name in DATASETS:
-        if cache_dir is not None:
-            # Use the HuggingFace dataset name to construct cache path
-            hf_name, _ = DATASETS[dataset_name]
-            cache_dataset_name = hf_name.split("/")[-1]  # Extract dataset name from HF path
-            cache_path = Path(cache_dir) / cache_dataset_name
-            if cache_path.exists():
-                # Load from local cache directory
-                return load_dataset(str(cache_path), split="train")
-        # Fall back to HuggingFace
-        hf_name, split = DATASETS[dataset_name]
-        return load_dataset(hf_name, split=split)
-    else:
-        raise ValueError(f"Unsupported dataset: {dataset_name}")
-
-
-def prepare_prompt(
-    dataset_name: str, sample: Dict[str, Any], prompt_template: str
-) -> str:
-    """Construct model input prompt based on sample, modify as needed."""
-    problem = None
-    if "problem" in sample:
-        problem = sample["problem"]
-    elif "question" in sample:
-        problem = sample["question"]
-    elif "prompt" in sample:
-        problem = sample["prompt"]
-    else:
-        raise ValueError(f"Unsupported sample format: {sample}")
-    return prompt_template.format(problem=problem)
-
-
-def score_response(
-    dataset_name: str, response: str, sample: Dict[str, Any]
-) -> Tuple[float, float]:
-    """
-    Returns:
-      - score: float, score of the response
-      - format_score: float, score of the response format
-    """
-    ground_truth = None
-    if "answer" in sample:
-        ground_truth = sample["answer"]
-    elif "label" in sample:
-        ground_truth = sample["label"]
-    else:
-        raise ValueError(f"Unsupported sample format: {sample}")
-    return grade_answer_perl(response, str(ground_truth))
-
+from src.grader import grade_answer_perl, score_response
 
 def parse_args() -> Tuple[argparse.Namespace, List[str], List[str]]:
     parser = argparse.ArgumentParser(
         description="Evaluation entry script, supports model merging, vLLM startup, and multi-dataset evaluation."
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["all", "infer", "eval"],
+        default="all",
+        help="Execution mode: 'all' (inference + evaluation), 'infer' (inference only), 'eval' (evaluation only).",
     )
     parser.add_argument(
         "--result-dir",
@@ -209,182 +150,6 @@ def parse_args() -> Tuple[argparse.Namespace, List[str], List[str]]:
 
     vllm_args, leftover = extract_vllm_args(unknown)
     return args, vllm_args, leftover
-
-
-class ProgressVisualizer:
-    def __init__(
-        self,
-        filepath: Path,
-        problem_n: int,
-        rollout_n: int,
-        completed: Set[Tuple[int, int]],
-    ) -> None:
-        self.filepath = filepath
-        self.problem_n = problem_n
-        self.rollout_n = rollout_n
-        # Row: rollout_id, Col: problem_id
-        self.grid = [["." for _ in range(problem_n)] for _ in range(rollout_n)]
-        for pid, rid in completed:
-            if 0 <= rid < rollout_n and 0 <= pid < problem_n:
-                self.grid[rid][pid] = "X"
-        self.lock = asyncio.Lock()
-        self._write_sync()
-
-    def _write_sync(self) -> None:
-        try:
-            with self.filepath.open("w", encoding="utf-8") as f:
-                for row in self.grid:
-                    f.write("".join(row) + "\n")
-        except Exception:
-            pass
-
-    async def update(self, problem_id: int, rollout_id: int) -> None:
-        if 0 <= rollout_id < self.rollout_n and 0 <= problem_id < self.problem_n:
-            async with self.lock:
-                if self.grid[rollout_id][problem_id] != "X":
-                    self.grid[rollout_id][problem_id] = "X"
-                    await asyncio.get_running_loop().run_in_executor(
-                        None, self._write_sync
-                    )
-
-    def cleanup(self) -> None:
-        try:
-            if self.filepath.exists():
-                self.filepath.unlink()
-        except Exception:
-            pass
-
-
-async def generate_responses(
-    args: argparse.Namespace,
-    dataset_name: str,
-    rollout_n: int,
-    ports: List[int],
-    logger: logging.Logger,
-    semaphores: Dict[int, asyncio.Semaphore],
-) -> None:
-    """
-    Asynchronously generate responses and save to output.jsonl.
-    Implementation: Read existing output.jsonl to build cache, only generate missing entries.
-    Generated results are appended to output.jsonl in real-time.
-    """
-    dataset_dir = Path(args.result_dir) / dataset_name
-    output_file = dataset_dir / "output.jsonl"
-    dataset_dir.mkdir(parents=True, exist_ok=True)
-
-    with StageContext(logger, f"C.1[{dataset_name}]", "Reading cached output"):
-        generated_results: List[Dict[str, Any]] = []
-        cache: Set[Tuple[int, int]] = set()
-
-        if output_file.exists():
-            with output_file.open("r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        data = json.loads(line)
-                        if (
-                            "problem_id" in data
-                            and "rollout_id" in data
-                            and "response" in data
-                            and data["response"] != ""
-                            and int(data["rollout_id"]) < rollout_n
-                        ):
-                            generated_results.append(data)
-                            cache.add((data["problem_id"], data["rollout_id"]))
-                    except json.JSONDecodeError:
-                        logger.warning("Invalid JSON line in output.jsonl, skipped.")
-
-        logger.info("Loaded cache entries: %d", len(generated_results))
-
-    with StageContext(logger, f"C.2[{dataset_name}]", "Preparing generation tasks"):
-        ds = load_dataset_from_hf(dataset_name, args.cache_dir)
-        # max_concurrent_per_dp and semaphores are now handled externally and passed in
-
-        tasks_to_process: List[Tuple[int, int, str, int]] = []
-        ports_cycle = len(ports)
-
-        prompt_template = PROMPT_TEMPLATES[args.prompt_format]
-
-        for idx, sample in enumerate(ds):
-            prompt = prepare_prompt(dataset_name, sample, prompt_template)
-            for rollout_id in range(rollout_n):
-                if (idx, rollout_id) in cache:
-                    continue
-                # port_idx = idx % ports_cycle
-                port_idx = (idx * rollout_n + rollout_id) % ports_cycle
-                tasks_to_process.append((idx, rollout_id, prompt, port_idx))
-
-        logger.info("New requests to generate: %d", len(tasks_to_process))
-
-        visualizer = ProgressVisualizer(
-            dataset_dir / "process.txt", len(ds), rollout_n, cache
-        )
-
-        if not tasks_to_process:
-            logger.info("All requests exist in cache, no generation needed.")
-            visualizer.cleanup()
-            return
-
-    with StageContext(logger, f"C.3[{dataset_name}]", "Parallel Generation"):
-        file_lock = asyncio.Lock()
-
-        async def generate_one_task(
-            problem_id: int,
-            rollout_id: int,
-            prompt: str,
-            port_idx: int,
-            session: aiohttp.ClientSession,
-        ) -> None:
-            port = ports[port_idx]
-            semaphore = semaphores[port]
-            response = ""
-
-            async with semaphore:
-                try:
-                    response = await generate_with_vllm_async(
-                        session, prompt, port, args
-                    )
-                except Exception as exc:
-                    logger.error(
-                        "Generation failed problem=%06d rollout=%03d port=%d: %s",
-                        problem_id,
-                        rollout_id,
-                        port,
-                        exc,
-                    )
-                    return
-
-            record = {
-                "problem_id": problem_id,
-                "rollout_id": rollout_id,
-                "response": response,
-            }
-
-            generated_results.append(record)
-
-            async with file_lock:
-                with output_file.open("a", encoding="utf-8") as f:
-                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-            await visualizer.update(problem_id, rollout_id)
-
-        connector = aiohttp.TCPConnector(limit=0, limit_per_host=0)
-        async with aiohttp.ClientSession(connector=connector) as session:
-            tasks = [
-                generate_one_task(pid, rid, pmt, pidx, session)
-                for pid, rid, pmt, pidx in tasks_to_process
-            ]
-            await asyncio.gather(*tasks)
-            visualizer.cleanup()
-
-        logger.info(
-            "Dataset %s generation complete, results saved to %s",
-            dataset_name,
-            output_file,
-        )
-
 
 def evaluate_dataset_results(
     args: argparse.Namespace,
@@ -549,36 +314,40 @@ async def main() -> None:
             "Detected unrecognized arguments (will be ignored): %s", leftover
         )
 
-    with StageContext(logger, "A", "Prepare Model/Merge LoRA"):
-        model_path = merge_model_if_needed(args, Path(args.result_dir), logger)
+    # Initialize variables for vLLM
+    processes, ports, semaphores = [], [], {}
 
-    with StageContext(logger, "B", "Start vLLM Backends"):
-        processes, ports = start_vllm_processes(model_path, args, vllm_args, logger)
-        atexit.register(stop_vllm_processes, processes, logger)
+    if args.mode in ["all", "infer"]:
+        with StageContext(logger, "A", "Prepare Model/Merge LoRA"):
+            model_path = merge_model_if_needed(args, Path(args.result_dir), logger)
 
-        def handle_signal(signum, frame):  # noqa: ANN001
-            logger.warning(
-                "Received signal %d, preparing to clean up and exit.", signum
-            )
-            stop_vllm_processes(processes, logger)
-            sys.exit(1)
+        with StageContext(logger, "B", "Start vLLM Backends"):
+            processes, ports = start_vllm_processes(model_path, args, vllm_args, logger)
+            atexit.register(stop_vllm_processes, processes, logger)
 
-        signal.signal(signal.SIGINT, handle_signal)
-        signal.signal(signal.SIGTERM, handle_signal)
-
-        for proc, port in zip(processes, ports):
-            if not wait_for_vllm_ready(port, proc, timeout=300, logger=logger):
+            def handle_signal(signum, frame):  # noqa: ANN001
+                logger.warning(
+                    "Received signal %d, preparing to clean up and exit.", signum
+                )
                 stop_vllm_processes(processes, logger)
                 sys.exit(1)
 
-    # Initialize global semaphores
-    dp_size = max(1, args.dp_size)
-    max_concurrent_per_dp = max(1, args.max_num_request // dp_size)
-    semaphores = {port: asyncio.Semaphore(max_concurrent_per_dp) for port in ports}
-    logger.info(
-        "Global concurrency control initialized: Max concurrency per DP process=%d",
-        max_concurrent_per_dp,
-    )
+            signal.signal(signal.SIGINT, handle_signal)
+            signal.signal(signal.SIGTERM, handle_signal)
+
+            for proc, port in zip(processes, ports):
+                if not wait_for_vllm_ready(port, proc, timeout=300, logger=logger):
+                    stop_vllm_processes(processes, logger)
+                    sys.exit(1)
+
+        # Initialize global semaphores
+        dp_size = max(1, args.dp_size)
+        max_concurrent_per_dp = max(1, args.max_num_request // dp_size)
+        semaphores = {port: asyncio.Semaphore(max_concurrent_per_dp) for port in ports}
+        logger.info(
+            "Global concurrency control initialized: Max concurrency per DP process=%d",
+            max_concurrent_per_dp,
+        )
 
     async def process_dataset_task(
         args: argparse.Namespace,
@@ -588,18 +357,20 @@ async def main() -> None:
         logger: logging.Logger,
         semaphores: Dict[int, asyncio.Semaphore],
     ) -> None:
-        with StageContext(
-            logger, f"C[{dataset_name}]", "Dataset Generation (Cache/Gen)"
-        ):
-            await generate_responses(
-                args, dataset_name, rollout_n, ports, logger, semaphores
-            )
+        if args.mode in ["all", "infer"]:
+            with StageContext(
+                logger, f"C[{dataset_name}]", "Dataset Generation (Cache/Gen)"
+            ):
+                await generate_responses(
+                    args, dataset_name, rollout_n, ports, logger, semaphores
+                )
 
-        with StageContext(logger, f"D[{dataset_name}]", "Evaluation & Statistics"):
-            # evaluate_dataset_results is synchronous CPU-bound task, put in thread pool to avoid blocking other concurrent tasks
-            await asyncio.to_thread(
-                evaluate_dataset_results, args, dataset_name, rollout_n, logger
-            )
+        if args.mode in ["all", "eval"]:
+            with StageContext(logger, f"D[{dataset_name}]", "Evaluation & Statistics"):
+                # evaluate_dataset_results is synchronous CPU-bound task, put in thread pool to avoid blocking other concurrent tasks
+                await asyncio.to_thread(
+                    evaluate_dataset_results, args, dataset_name, rollout_n, logger
+                )
 
     datasets_to_run = [item.strip() for item in args.dataset.split(",") if item.strip()]
     tasks = []
@@ -628,18 +399,21 @@ async def main() -> None:
     else:
         logger.warning("No dataset tasks to execute.")
 
-    stop_vllm_processes(processes, logger)
-    logger.info("All evaluation processes completed.")
+    if args.mode in ["all", "infer"]:
+        stop_vllm_processes(processes, logger)
+        logger.info("All inference processes completed.")
 
-    if args.adapter:
-        merged_model_dir = Path(args.result_dir) / "model"
-        if merged_model_dir.exists():
-            logger.info("Deleting merged model directory: %s", merged_model_dir)
-            try:
-                shutil.rmtree(merged_model_dir)
-                logger.info("Merged model directory deleted.")
-            except Exception as e:
-                logger.warning("Failed to delete merged model directory: %s", e)
+        if args.adapter:
+            merged_model_dir = Path(args.result_dir) / "model"
+            if merged_model_dir.exists():
+                logger.info("Deleting merged model directory: %s", merged_model_dir)
+                try:
+                    shutil.rmtree(merged_model_dir)
+                    logger.info("Merged model directory deleted.")
+                except Exception as e:
+                    logger.warning("Failed to delete merged model directory: %s", e)
+    else:
+        logger.info("All evaluation tasks completed.")
 
 
 if __name__ == "__main__":
