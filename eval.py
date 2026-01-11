@@ -1,35 +1,13 @@
 import argparse
 import asyncio
-import atexit
 import logging
-import shutil
-import signal
-import sys
-import json
-import statistics
-import time
 from pathlib import Path
 from typing import Dict, List, Tuple, Set, Any
-from datasets import load_dataset
-import aiohttp
 
-from src.utils import (
-    StageContext, 
-    setup_logging, 
-    merge_model_if_needed, 
-    prepare_prompt, 
-)
-from src.vllm import (
-    extract_vllm_args,
-    start_vllm_processes,
-    stop_vllm_processes,
-    wait_for_vllm_ready,
-    generate_with_vllm_async,
-    generate_responses,
-    PROMPT_TEMPLATES,
-)
-from src.grader import grade_answer_perl, score_response
-from src.data import load_dataset_from_hf
+from src.utils import setup_logging
+
+import sys
+sys.setrecursionlimit(100000)
 
 def parse_args() -> Tuple[argparse.Namespace, List[str], List[str]]:
     parser = argparse.ArgumentParser(
@@ -137,324 +115,96 @@ def parse_args() -> Tuple[argparse.Namespace, List[str], List[str]]:
         default=None,
         help="Max number of concurrent requests per data parallel (DP) vLLM backend.",
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=256,
+        help="Batch size for offline inference.",
+    )
 
     args, unknown = parser.parse_known_args()
 
-    if args.max_num_request is None:
-        args.max_num_request = args.dp_size
-    else:
-        assert args.max_num_request > 0
-        assert args.max_num_request % args.dp_size == 0, (
-            f"args.max_num_request({args.max_num_request}) must be divisible by args.dp_size({args.dp_size})"
-        )
+    return args
 
-    vllm_args, leftover = extract_vllm_args(unknown)
-    return args, vllm_args, leftover
+def main() -> None:
+    # ------------------- 0. parsing args and preparing logger --------------------
 
-def evaluate_dataset_results(
-    args: argparse.Namespace,
-    dataset_name: str,
-    rollout_n: int,
-    logger: logging.Logger,
-    use_judge: bool = True,
-) -> Dict[str, Dict[int, float]]:
-    """
-    Evaluation stage: Read outputs.jsonl, score and generate result.jsonl, return stats metrics.
-    """
-    dataset_dir = Path(args.result_dir) / dataset_name
-    outputs_file = dataset_dir / "outputs.jsonl"
-    result_file = dataset_dir / "result.jsonl"
-
-    with StageContext(logger, f"D.1[{dataset_name}]", "Loading model output"):
-        if not outputs_file.exists():
-            raise ValueError(f"outputs.jsonl not found, cannot evaluate: {dataset_name}")
-
-        outputs_map: Dict[int, List[Tuple[int, str]]] = {}
-        # We need to merge records for the same (problem_id, rollout_id)
-        raw_data: Dict[Tuple[int, int], Dict[str, Any]] = {}
-
-        # 1. Load original outputs
-        with outputs_file.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    d = json.loads(line)
-                    pid, rid = d.get("problem_id"), d.get("rollout_id")
-                    if pid is None or rid is None:
-                        continue
-                    if (pid, rid) not in raw_data:
-                        raw_data[(pid, rid)] = d
-                    else:
-                        raw_data[(pid, rid)].update(d)
-                except json.JSONDecodeError:
-                    pass
-
-        # 2. Load judge extractions if they exist and we want to use them
-        judge_file = dataset_dir / "judge.jsonl"
-        if use_judge and judge_file.exists():
-            with judge_file.open("r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        d = json.loads(line)
-                        pid, rid = d.get("problem_id"), d.get("rollout_id")
-                        if pid is None or rid is None:
-                            continue
-                        if (pid, rid) in raw_data:
-                            raw_data[(pid, rid)].update(d)
-                        else:
-                            raw_data[(pid, rid)] = d
-                    except json.JSONDecodeError:
-                        pass
-
-        for (pid, rid), data in raw_data.items():
-            # Prioritize extracted_response from judge if it exists
-            final_resp = None
-            if use_judge:
-                final_resp = data.get("extracted_response")
-            
-            if not final_resp:
-                final_resp = data.get("response", "")
-            
-            outputs_map.setdefault(pid, []).append((rid, final_resp))
-
-    with StageContext(logger, f"D.2[{dataset_name}]", "Loading original dataset"):
-        ds = load_dataset_from_hf(dataset_name, args.cache_dir)
-
-    with StageContext(logger, f"D.3[{dataset_name}]", "Parallel Evaluation & Metrics"):
-        records_for_metrics: List[Dict[str, Any]] = []
-        raw_stats_list: List[Dict[str, Any]] = []
-
-        prompt_template = PROMPT_TEMPLATES[args.prompt_format]
-        with result_file.open("w", encoding="utf-8") as rf:
-            for idx, sample in enumerate(ds):
-                problem_id = idx
-                prompt = prepare_prompt(dataset_name, sample, prompt_template)
-
-                rollouts = outputs_map.get(problem_id, [])
-                # Sort by rollout_id
-                rollouts.sort(key=lambda x: x[0])
-                rollout_dict = {r[0]: r[1] for r in rollouts}
-
-                responses = []
-                scores = []
-                format_scores = []
-
-                for rid in range(rollout_n):
-                    if rid not in rollout_dict:
-                        raise ValueError(
-                            f"Missing result: problem_id={problem_id} rollout_id={rid}. Please check if generation requests failed."
-                        )
-                    resp = rollout_dict.get(rid, "")
-                    responses.append(resp)
-
-                    if resp:
-                        score, format_score = score_response(dataset_name, resp, sample)
-                    else:
-                        score, format_score = 0.0, 0.0
-                    scores.append(score)
-                    format_scores.append(format_score)
-
-                    records_for_metrics.append(
-                        {"problem_id": problem_id, "rollout_id": rid, "score": score}
-                    )
-
-                if scores:
-                    avg_val = statistics.mean(scores)
-                    max_val = max(scores)
-                    min_val = min(scores)
-                    try:
-                        std_val = statistics.stdev(scores)
-                    except statistics.StatisticsError:
-                        std_val = 0.0
-                else:
-                    avg_val = max_val = min_val = std_val = 0.0
-
-                format_score_avg = (
-                    statistics.mean(format_scores) if format_scores else 0.0
-                )
-
-                record = {
-                    "problem_id": problem_id,
-                    "prompt": prompt,
-                    "responses": responses,
-                    "scores": scores,
-                    "avg": avg_val,
-                    "max": max_val,
-                    "min": min_val,
-                    "std": std_val,
-                    "format_score_avg": format_score_avg,
-                    "data_source": dataset_name,
-                }
-                rf.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-                raw_stats_list.append(
-                    {
-                        "problem_id": problem_id,
-                        "avg": avg_val,
-                        "max": max_val,
-                        "min": min_val,
-                        "std": std_val,
-                        "format_score_avg": format_score_avg,
-                    }
-                )
-
-    with StageContext(logger, f"D.4[{dataset_name}]", "Summarizing results"):
-        if raw_stats_list:
-            summary = {
-                "avg": statistics.mean(x["avg"] for x in raw_stats_list),
-                "max": statistics.mean(x["max"] for x in raw_stats_list),
-                "min": statistics.mean(x["min"] for x in raw_stats_list),
-                "std": statistics.mean(x["std"] for x in raw_stats_list),
-                "format_score_avg": statistics.mean(
-                    x["format_score_avg"] for x in raw_stats_list
-                ),
-            }
-        else:
-            summary = {
-                "avg": 0.0,
-                "max": 0.0,
-                "min": 0.0,
-                "std": 0.0,
-                "format_score_avg": 0.0,
-            }
-
-        logger.info(
-            "Evaluation complete, results written to %s",
-            result_file,
-        )
-        logger.info("Summary Statistics: %s", summary)
-
-def init_vllm(
-    args: argparse.Namespace,
-    logger: logging.Logger,
-    processes,
-    ports: List[int],
-    semaphores: Dict[int, asyncio.Semaphore],
-    vllm_args: List[str],
-):
-    with StageContext(logger, "A", "Prepare Model/Merge LoRA"):
-        model_path = merge_model_if_needed(args, Path(args.result_dir), logger)
-
-    with StageContext(logger, "B", "Start vLLM Backends"):
-        new_processes, new_ports = start_vllm_processes(model_path, args, vllm_args, logger)
-        processes.extend(new_processes)
-        ports.extend(new_ports)
-        atexit.register(stop_vllm_processes, processes, logger)
-
-        def handle_signal(signum, frame):  # noqa: ANN001
-            logger.warning(
-                "Received signal %d, preparing to clean up and exit.", signum
-            )
-            stop_vllm_processes(processes, logger)
-            sys.exit(1)
-
-        signal.signal(signal.SIGINT, handle_signal)
-        signal.signal(signal.SIGTERM, handle_signal)
-
-        for proc, port in zip(processes, ports):
-            if not wait_for_vllm_ready(port, proc, timeout=300, logger=logger):
-                stop_vllm_processes(processes, logger)
-                sys.exit(1)
-
-    # Initialize global semaphores
-    dp_size = max(1, args.dp_size)
-    max_concurrent_per_dp = max(1, args.max_num_request // dp_size)
-    semaphores.update({port: asyncio.Semaphore(max_concurrent_per_dp) for port in ports})
-    logger.info(
-        "Global concurrency control initialized: Max concurrency per DP process=%d",
-        max_concurrent_per_dp,
-    )
-
-async def process_dataset_task(
-    args: argparse.Namespace,
-    dataset_name: str,
-    rollout_n: int,
-    ports: List[int],
-    logger: logging.Logger,
-    semaphores: Dict[int, asyncio.Semaphore],
-) -> None:
-    do_gen = args.mode in ["all", "infer"]
-    do_judge = args.mode in ["all", "llm-eval"]
-    
-    if do_gen or do_judge:
-        with StageContext(
-            logger, f"C[{dataset_name}]", "Dataset Generation (Cache/Gen)"
-        ):
-            await generate_responses(
-                args, dataset_name, rollout_n, ports, logger, semaphores,
-                do_generation=do_gen,
-                do_judge_extract=do_judge
-            )
-
-    if args.mode in ["all", "llm-eval", "rule-eval"]:
-        with StageContext(logger, f"D[{dataset_name}]", "Evaluation & Statistics"):
-            use_judge = (args.mode != "rule-eval")
-            # evaluate_dataset_results is synchronous CPU-bound task, put in thread pool to avoid blocking other concurrent tasks
-            await asyncio.to_thread(
-                evaluate_dataset_results, args, dataset_name, rollout_n, logger, use_judge
-            )
-
-
-async def main() -> None:
-    # ------------------- 0. parsing args and preparing logger -------------------- 
-    args, vllm_args, leftover = parse_args()
-    logger = setup_logging(Path(args.result_dir))
-    if leftover:
-        logger.warning(
-            "Detected unrecognized arguments (will be ignored): %s", leftover
-        )
-
-    # ------------------- 1. setting vllm --------------------
-    # Initialize variables for vLLM
-    processes, ports, semaphores = [], [], {}
-
-    # Determine what phases need LLM
+    args = parse_args()
+    result_dir = Path(args.result_dir)
+    logger = setup_logging(result_dir)
     need_pass1 = args.mode in ["all", "infer"]
     need_pass2 = args.mode in ["all", "llm-eval"]
 
-    if need_pass1 or need_pass2:
-        init_vllm(args, logger, processes, ports, semaphores, vllm_args)
+    # ------------------- 1. prepare data --------------------
+    
+    if "infer" in args.mode:
+        from src.data.data import prepare_pass_at_k_jsonl
+        data_file = result_dir / "data.jsonl" 
+        prepare_pass_at_k_jsonl(
+            config_str=args.dataset,
+            output_file=data_file,
+            cache_dir=args.cache_dir,
+        )
 
-    # ------------------- 2. preparing and submitting datasets -------------------- 
-    datasets_to_run = [item.strip() for item in args.dataset.split(",") if item.strip()]
-    tasks = []
+    # ------------------- 2. offline inference --------------------
 
-    for task_abbr in datasets_to_run:
-        if "@" in task_abbr:
-            dataset_name = task_abbr.split("@")[0]
-            rollout_n = int(task_abbr.split("@")[1])
+    if "infer" in args.mode:
+        from src.backend.offline import run_offline_async_inference
+
+        output_file = result_dir / "inference_results.jsonl"
+
+        # check if output_file exists
+        if Path(output_file).exists():
+            logger.info(f"Output file {output_file} already exists, skipping offline inference")
         else:
-            dataset_name = task_abbr
-            rollout_n = args.rollout_n
+            asyncio.run(run_offline_async_inference(
+                input_file=data_file,
+                output_file=output_file,
+                model_path=args.model,
+                dp_size=args.dp_size,
+                tp_size=args.tp_size,
+                batch_size=args.batch_size,
+                mem_fraction_static=args.gpu_memory_utilization,
+                sampling_params={
+                    "temperature": args.temperature,
+                    "top_p": args.top_p,
+                    "max_new_tokens": args.max_new_tokens,
+                },
+            ))
+    
+    if "llm-eval" in args.mode:
+        from src.backend.offline import run_offline_async_inference
+        from src.data.extract import prepare_extraction_data
 
-        tasks.append(
-            asyncio.create_task(
-                process_dataset_task(
-                    args, dataset_name, rollout_n, ports, logger, semaphores
-                )
-            )
-        )
+        infer_file = result_dir / "inference_results.jsonl"
+        eval_input_file = result_dir / "eval_input.jsonl"
+        eval_output_file = result_dir / "eval_results.jsonl"
 
-    # ------------------- 3. starting execution --------------------
-    if tasks:
-        logger.info(
-            "Submitted %d dataset tasks concurrently, starting execution...", len(tasks)
-        )
-        await asyncio.gather(*tasks)
-    else:
-        logger.warning("No dataset tasks to execute.")
+        if Path(eval_output_file).exists():
+            logger.info(f"Eval output {eval_output_file} exists, skipping extraction.")
+        else:
+            # Prepare extraction prompts from inference results
+            logger.info(f"Preparing extraction prompts from {infer_file}...")
+            prepare_extraction_data(infer_file, eval_input_file)
 
-    # ------------------- 4. stopping vllm --------------------
-    if args.mode in ["all", "infer"]:
-        stop_vllm_processes(processes, logger)
-        logger.info("All inference processes completed.")
-    else:
-        logger.info("All evaluation tasks completed.")
+            # Run LLM to extract answers
+            asyncio.run(run_offline_async_inference(
+                input_file=eval_input_file,
+                output_file=eval_output_file,
+                model_path=args.model,
+                dp_size=args.dp_size,
+                tp_size=args.tp_size,
+                batch_size=args.batch_size,
+                mem_fraction_static=args.gpu_memory_utilization,
+                sampling_params={
+                    "temperature": 0.0,  # Greedy for extraction
+                    "max_new_tokens": 512,
+                },
+            ))
+    
+    # ------------------- 3. evaluation --------------------
+        
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
