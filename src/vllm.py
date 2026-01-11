@@ -10,7 +10,7 @@ import threading
 import time
 import urllib.request
 import aiohttp
-from typing import List, Tuple, Iterable, Dict, Any, Set
+from typing import List, Tuple, Iterable, Dict, Any, Set, Optional
 from pathlib import Path
 from src.utils import load_dataset_from_hf, prepare_prompt, ProgressVisualizer, StageContext
 
@@ -317,6 +317,8 @@ async def generate_responses(
     ports: List[int],
     logger: logging.Logger,
     semaphores: Dict[int, asyncio.Semaphore],
+    do_generation: bool = True,
+    do_judge_extract: bool = False,
 ) -> None:
     """
     Asynchronously generate responses and save to outputs.jsonl.
@@ -327,74 +329,77 @@ async def generate_responses(
     output_file = dataset_dir / "outputs.jsonl"
     dataset_dir.mkdir(parents=True, exist_ok=True)
 
+    ds = None
+
     # Pass 1: Original Generation
-    with StageContext(logger, f"C.1[{dataset_name}]", "Reading cached output (Pass 1)"):
-        cache: Set[Tuple[int, int]] = set()
+    if do_generation:
+        with StageContext(logger, f"C.1[{dataset_name}]", "Reading cached output (Pass 1)"):
+            cache: Set[Tuple[int, int]] = set()
 
-        if output_file.exists():
-            with output_file.open("r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
+            if output_file.exists():
+                with output_file.open("r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            data = json.loads(line)
+                            if (
+                                "problem_id" in data
+                                and "rollout_id" in data
+                                and "response" in data
+                                and data["response"] != ""
+                                and int(data["rollout_id"]) < rollout_n
+                            ):
+                                cache.add((data["problem_id"], data["rollout_id"]))
+                        except json.JSONDecodeError:
+                            logger.warning("Invalid JSON line in outputs.jsonl, skipped.")
+
+            logger.info("Loaded cache entries for generation: %d", len(cache))
+
+        with StageContext(logger, f"C.2[{dataset_name}]", "Preparing generation tasks"):
+            ds = load_dataset_from_hf(dataset_name, args.cache_dir)
+            tasks_to_process: List[Dict[str, Any]] = []
+            ports_cycle = len(ports)
+            prompt_template = PROMPT_TEMPLATES[args.prompt_format]
+
+            for idx, sample in enumerate(ds):
+                prompt = prepare_prompt(dataset_name, sample, prompt_template)
+                for rollout_id in range(rollout_n):
+                    if (idx, rollout_id) in cache:
                         continue
-                    try:
-                        data = json.loads(line)
-                        if (
-                            "problem_id" in data
-                            and "rollout_id" in data
-                            and "response" in data
-                            and data["response"] != ""
-                            and int(data["rollout_id"]) < rollout_n
-                        ):
-                            cache.add((data["problem_id"], data["rollout_id"]))
-                    except json.JSONDecodeError:
-                        logger.warning("Invalid JSON line in outputs.jsonl, skipped.")
+                    port_idx = (idx * rollout_n + rollout_id) % ports_cycle
+                    tasks_to_process.append(
+                        {
+                            "problem_id": idx,
+                            "rollout_id": rollout_id,
+                            "prompt": prompt,
+                            "port_idx": port_idx,
+                        }
+                    )
 
-        logger.info("Loaded cache entries for generation: %d", len(cache))
+            logger.info("New requests to generate: %d", len(tasks_to_process))
+            visualizer = ProgressVisualizer(
+                dataset_dir / "process_gen.txt", len(ds), rollout_n, cache
+            )
 
-    with StageContext(logger, f"C.2[{dataset_name}]", "Preparing generation tasks"):
-        ds = load_dataset_from_hf(dataset_name, args.cache_dir)
-        tasks_to_process: List[Dict[str, Any]] = []
-        ports_cycle = len(ports)
-        prompt_template = PROMPT_TEMPLATES[args.prompt_format]
-
-        for idx, sample in enumerate(ds):
-            prompt = prepare_prompt(dataset_name, sample, prompt_template)
-            for rollout_id in range(rollout_n):
-                if (idx, rollout_id) in cache:
-                    continue
-                port_idx = (idx * rollout_n + rollout_id) % ports_cycle
-                tasks_to_process.append(
-                    {
-                        "problem_id": idx,
-                        "rollout_id": rollout_id,
-                        "prompt": prompt,
-                        "port_idx": port_idx,
-                    }
-                )
-
-        logger.info("New requests to generate: %d", len(tasks_to_process))
-        visualizer = ProgressVisualizer(
-            dataset_dir / "process_gen.txt", len(ds), rollout_n, cache
-        )
-
-        if tasks_to_process:
-            with StageContext(logger, f"C.3[{dataset_name}]", "Parallel Generation"):
-                await run_batch_inference(
-                    tasks=tasks_to_process,
-                    ports=ports,
-                    semaphores=semaphores,
-                    args=args,
-                    logger=logger,
-                    output_file=output_file,
-                    visualizer=visualizer,
-                )
-        else:
-            logger.info("All generation requests exist in cache.")
-        visualizer.cleanup()
+            if tasks_to_process:
+                with StageContext(logger, f"C.3[{dataset_name}]", "Parallel Generation"):
+                    await run_batch_inference(
+                        tasks=tasks_to_process,
+                        ports=ports,
+                        semaphores=semaphores,
+                        args=args,
+                        logger=logger,
+                        output_file=output_file,
+                        visualizer=visualizer,
+                    )
+            else:
+                logger.info("All generation requests exist in cache.")
+            visualizer.cleanup()
 
     # Pass 2: LLM-as-a-judge Extraction (Optional)
-    if args.llm_judge_extract:
+    if do_judge_extract:
         judge_file = dataset_dir / "judge.jsonl"
         with StageContext(logger, f"C.4[{dataset_name}]", "Reading cached output (Pass 2: Extraction)"):
             extraction_cache: Set[Tuple[int, int]] = set()
@@ -446,6 +451,9 @@ async def generate_responses(
 
         if responses_to_extract:
             with StageContext(logger, f"C.5[{dataset_name}]", "LLM-as-a-judge Answer Extraction"):
+                if ds is None:
+                    ds = load_dataset_from_hf(dataset_name, args.cache_dir)
+                
                 from src.grader import extract_answer
                 extraction_tasks: List[Dict[str, Any]] = []
                 extract_template = PROMPT_TEMPLATES["extraction"]

@@ -26,7 +26,7 @@ MAX_NUM_REQUEST=2000
 GPU_MEMORY_UTILIZATION=0.95
 DTYPE="bfloat16"
 SERVE_PORT=8000
-MODE="eval" # infer, eval or all
+MODE="llm-eval" # infer, eval or all
 
 function kill_vllm_processes() {
   pkill -9 python || true;
@@ -63,7 +63,6 @@ function eval_model_with_adapter() {
     --max-num-request "${MAX_NUM_REQUEST}" \
     --dtype "${DTYPE}" \
     --mode "${MODE}" \
-    --llm-judge-extract \
     ${CACHE_DIR:+--cache-dir "${CACHE_DIR}"} 2>&1 | tee "${RESULT_DIR}/eval.log";
 }
 

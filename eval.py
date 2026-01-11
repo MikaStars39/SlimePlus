@@ -37,9 +37,9 @@ def parse_args() -> Tuple[argparse.Namespace, List[str], List[str]]:
     )
     parser.add_argument(
         "--mode",
-        choices=["all", "infer", "eval"],
+        choices=["all", "infer", "llm-eval", "rule-eval"],
         default="all",
-        help="Execution mode: 'all' (inference + evaluation), 'infer' (inference only), 'eval' (evaluation only).",
+        help="Execution mode: 'all' (infer+llm-eval), 'infer' (inference only), 'llm-eval' (LLM extraction + evaluation), 'rule-eval' (Rule extraction + evaluation).",
     )
     parser.add_argument(
         "--result-dir",
@@ -137,11 +137,6 @@ def parse_args() -> Tuple[argparse.Namespace, List[str], List[str]]:
         default=None,
         help="Max number of concurrent requests per data parallel (DP) vLLM backend.",
     )
-    parser.add_argument(
-        "--llm-judge-extract",
-        action="store_true",
-        help="Whether to use LLM-as-a-judge to extract answers from responses.",
-    )
 
     args, unknown = parser.parse_known_args()
 
@@ -161,6 +156,7 @@ def evaluate_dataset_results(
     dataset_name: str,
     rollout_n: int,
     logger: logging.Logger,
+    use_judge: bool = True,
 ) -> Dict[str, Dict[int, float]]:
     """
     Evaluation stage: Read outputs.jsonl, score and generate result.jsonl, return stats metrics.
@@ -195,9 +191,9 @@ def evaluate_dataset_results(
                 except json.JSONDecodeError:
                     pass
 
-        # 2. Load judge extractions if they exist
+        # 2. Load judge extractions if they exist and we want to use them
         judge_file = dataset_dir / "judge.jsonl"
-        if judge_file.exists():
+        if use_judge and judge_file.exists():
             with judge_file.open("r", encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
@@ -217,7 +213,10 @@ def evaluate_dataset_results(
 
         for (pid, rid), data in raw_data.items():
             # Prioritize extracted_response from judge if it exists
-            final_resp = data.get("extracted_response")
+            final_resp = None
+            if use_judge:
+                final_resp = data.get("extracted_response")
+            
             if not final_resp:
                 final_resp = data.get("response", "")
             
@@ -341,7 +340,11 @@ async def main() -> None:
     # Initialize variables for vLLM
     processes, ports, semaphores = [], [], {}
 
-    if args.mode in ["all", "infer"]:
+    # Determine what phases need LLM
+    need_pass1 = args.mode in ["all", "infer"]
+    need_pass2 = args.mode in ["all", "llm-eval"]
+
+    if need_pass1 or need_pass2:
         with StageContext(logger, "A", "Prepare Model/Merge LoRA"):
             model_path = merge_model_if_needed(args, Path(args.result_dir), logger)
 
@@ -381,19 +384,25 @@ async def main() -> None:
         logger: logging.Logger,
         semaphores: Dict[int, asyncio.Semaphore],
     ) -> None:
-        if args.mode in ["all", "infer"]:
+        do_gen = args.mode in ["all", "infer"]
+        do_judge = args.mode in ["all", "llm-eval"]
+        
+        if do_gen or do_judge:
             with StageContext(
                 logger, f"C[{dataset_name}]", "Dataset Generation (Cache/Gen)"
             ):
                 await generate_responses(
-                    args, dataset_name, rollout_n, ports, logger, semaphores
+                    args, dataset_name, rollout_n, ports, logger, semaphores,
+                    do_generation=do_gen,
+                    do_judge_extract=do_judge
                 )
 
-        if args.mode in ["all", "eval"]:
+        if args.mode in ["all", "llm-eval", "rule-eval"]:
             with StageContext(logger, f"D[{dataset_name}]", "Evaluation & Statistics"):
+                use_judge = (args.mode != "rule-eval")
                 # evaluate_dataset_results is synchronous CPU-bound task, put in thread pool to avoid blocking other concurrent tasks
                 await asyncio.to_thread(
-                    evaluate_dataset_results, args, dataset_name, rollout_n, logger
+                    evaluate_dataset_results, args, dataset_name, rollout_n, logger, use_judge
                 )
 
     datasets_to_run = [item.strip() for item in args.dataset.split(",") if item.strip()]
