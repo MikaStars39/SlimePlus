@@ -224,6 +224,86 @@ async def generate_with_vllm_async(
         raise RuntimeError(f"Failed to parse vLLM response: {content}") from exc
 
 
+async def run_batch_inference(
+    tasks: List[Dict[str, Any]],
+    ports: List[int],
+    semaphores: Dict[int, asyncio.Semaphore],
+    args: argparse.Namespace,
+    logger: logging.Logger,
+    output_file: Optional[Path] = None,
+    visualizer: Optional[ProgressVisualizer] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Generic batch inference interface.
+    tasks: List of dicts. Each dict must contain "prompt".
+           If "port_idx" is present, it will be used to select the port from ports list.
+           Otherwise, it will be assigned automatically (round-robin).
+           All other fields in the dict will be included in the result record.
+    """
+    if not tasks:
+        return []
+
+    results: List[Dict[str, Any]] = []
+    file_lock = asyncio.Lock()
+    ports_cycle = len(ports)
+
+    async def generate_one_task(
+        task: Dict[str, Any],
+        task_idx: int,
+        session: aiohttp.ClientSession,
+    ) -> None:
+        prompt = task["prompt"]
+        port_idx = task.get("port_idx")
+        if port_idx is None:
+            port_idx = task_idx % ports_cycle
+
+        port = ports[port_idx]
+        semaphore = semaphores[port]
+
+        # Prepare the record for output
+        record = task.copy()
+        # We don't want port_idx in the final saved record if it was just for routing
+        # record.pop("port_idx", None)
+
+        async with semaphore:
+            try:
+                response = await generate_with_vllm_async(
+                    session, prompt, port, args
+                )
+                record["response"] = response
+            except Exception as exc:
+                logger.error(
+                    "Generation failed for task %d (port=%d): %s",
+                    task_idx,
+                    port,
+                    exc,
+                )
+                return
+
+        results.append(record)
+
+        if output_file:
+            async with file_lock:
+                with output_file.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+        if visualizer:
+            pid = record.get("problem_id")
+            rid = record.get("rollout_id")
+            if pid is not None and rid is not None:
+                await visualizer.update(pid, rid)
+
+    connector = aiohttp.TCPConnector(limit=0, limit_per_host=0)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        coros = [
+            generate_one_task(task, i, session)
+            for i, task in enumerate(tasks)
+        ]
+        await asyncio.gather(*coros)
+
+    return results
+
+
 async def generate_responses(
     args: argparse.Namespace,
     dataset_name: str,
@@ -271,7 +351,7 @@ async def generate_responses(
         ds = load_dataset_from_hf(dataset_name, args.cache_dir)
         # max_concurrent_per_dp and semaphores are now handled externally and passed in
 
-        tasks_to_process: List[Tuple[int, int, str, int]] = []
+        tasks_to_process: List[Dict[str, Any]] = []
         ports_cycle = len(ports)
 
         prompt_template = PROMPT_TEMPLATES[args.prompt_format]
@@ -283,7 +363,14 @@ async def generate_responses(
                     continue
                 # port_idx = idx % ports_cycle
                 port_idx = (idx * rollout_n + rollout_id) % ports_cycle
-                tasks_to_process.append((idx, rollout_id, prompt, port_idx))
+                tasks_to_process.append(
+                    {
+                        "problem_id": idx,
+                        "rollout_id": rollout_id,
+                        "prompt": prompt,
+                        "port_idx": port_idx,
+                    }
+                )
 
         logger.info("New requests to generate: %d", len(tasks_to_process))
 
@@ -297,56 +384,16 @@ async def generate_responses(
             return
 
     with StageContext(logger, f"C.3[{dataset_name}]", "Parallel Generation"):
-        file_lock = asyncio.Lock()
-
-        async def generate_one_task(
-            problem_id: int,
-            rollout_id: int,
-            prompt: str,
-            port_idx: int,
-            session: aiohttp.ClientSession,
-        ) -> None:
-            port = ports[port_idx]
-            semaphore = semaphores[port]
-            response = ""
-
-            async with semaphore:
-                try:
-                    response = await generate_with_vllm_async(
-                        session, prompt, port, args
-                    )
-                except Exception as exc:
-                    logger.error(
-                        "Generation failed problem=%06d rollout=%03d port=%d: %s",
-                        problem_id,
-                        rollout_id,
-                        port,
-                        exc,
-                    )
-                    return
-
-            record = {
-                "problem_id": problem_id,
-                "rollout_id": rollout_id,
-                "response": response,
-            }
-
-            generated_results.append(record)
-
-            async with file_lock:
-                with output_file.open("a", encoding="utf-8") as f:
-                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-            await visualizer.update(problem_id, rollout_id)
-
-        connector = aiohttp.TCPConnector(limit=0, limit_per_host=0)
-        async with aiohttp.ClientSession(connector=connector) as session:
-            tasks = [
-                generate_one_task(pid, rid, pmt, pidx, session)
-                for pid, rid, pmt, pidx in tasks_to_process
-            ]
-            await asyncio.gather(*tasks)
-            visualizer.cleanup()
+        await run_batch_inference(
+            tasks=tasks_to_process,
+            ports=ports,
+            semaphores=semaphores,
+            args=args,
+            logger=logger,
+            output_file=output_file,
+            visualizer=visualizer,
+        )
+        visualizer.cleanup()
 
         logger.info(
             "Dataset %s generation complete, results saved to %s",
