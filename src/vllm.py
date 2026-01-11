@@ -12,7 +12,8 @@ import urllib.request
 import aiohttp
 from typing import List, Tuple, Iterable, Dict, Any, Set, Optional
 from pathlib import Path
-from src.utils import load_dataset_from_hf, prepare_prompt, ProgressVisualizer, StageContext
+from src.utils import prepare_prompt, ProgressVisualizer, StageContext
+from src.data import load_dataset_from_hf
 
 
 PROMPT_TEMPLATES = {

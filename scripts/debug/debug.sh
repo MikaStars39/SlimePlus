@@ -8,10 +8,10 @@ ulimit -n 65535
 # export VLLM_LOGGING_LEVEL="DEBUG"
 
 PROJECT_DIR="."
-# BASE_MODEL_PATH="/mnt/llm-train/users/explore-train/zhangyuqi60/Nomerge/ms-swift/hf_outputs/qwen3-30b-s3"
-BASE_MODEL_PATH="/mnt/llm-train/users/explore-train/qingyu/MikaEval/.cache/Qwen3-4B-Instruct-2507" # for judge
-# DATASET="aime2024@512,aime2025@512,amc2023@32,math500@8,minerva@8,hmmt2025@32"
-DATASET="aime2024@2" # debug
+BASE_MODEL_PATH="/mnt/llm-train/users/explore-train/zhangyuqi60/Nomerge/ms-swift/hf_outputs/qwen3-30b-s3"
+# BASE_MODEL_PATH="/mnt/llm-train/users/explore-train/qingyu/MikaEval/.cache/Qwen3-4B-Instruct-2507" # for judge
+DATASET="aime2024@32,aime2025@32,amc2023@32,math500@4,minerva@4,hmmt2025@32"
+# DATASET="aime2024@2" # debug
 
 CACHE_DIR="${PROJECT_DIR}/.cache"
 # Cache directory for benchmark datasets (optional)
@@ -26,7 +26,7 @@ MAX_NUM_REQUEST=2000
 GPU_MEMORY_UTILIZATION=0.95
 DTYPE="bfloat16"
 SERVE_PORT=8000
-MODE="llm-eval" # infer, eval or all
+MODE="infer" # infer, rule-eval, llm-eval
 
 function kill_vllm_processes() {
   pkill -9 python || true;

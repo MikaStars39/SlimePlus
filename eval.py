@@ -17,7 +17,6 @@ from src.utils import (
     StageContext, 
     setup_logging, 
     merge_model_if_needed, 
-    load_dataset_from_hf, 
     prepare_prompt, 
 )
 from src.vllm import (
@@ -30,6 +29,7 @@ from src.vllm import (
     PROMPT_TEMPLATES,
 )
 from src.grader import grade_answer_perl, score_response
+from src.data import load_dataset_from_hf
 
 def parse_args() -> Tuple[argparse.Namespace, List[str], List[str]]:
     parser = argparse.ArgumentParser(
