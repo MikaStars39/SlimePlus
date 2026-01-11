@@ -1,13 +1,18 @@
 import argparse
 import asyncio
-import logging
+import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Tuple, Set, Any
+from pprint import pprint
 
-from src.utils import setup_logging
-
-import sys
+# 必须在所有自定义导入之前，甚至在 logging 之前
 sys.setrecursionlimit(100000)
+
+from src.backend.offline import run_offline_async_inference
+
+def log_info(msg: str):
+    print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} | INFO | {msg}")
 
 def parse_args() -> Tuple[argparse.Namespace, List[str], List[str]]:
     parser = argparse.ArgumentParser(
@@ -131,7 +136,6 @@ def main() -> None:
 
     args = parse_args()
     result_dir = Path(args.result_dir)
-    logger = setup_logging(result_dir)
     need_pass1 = args.mode in ["all", "infer"]
     need_pass2 = args.mode in ["all", "llm-eval"]
 
@@ -149,18 +153,16 @@ def main() -> None:
     # ------------------- 2. offline inference --------------------
 
     if "infer" in args.mode:
-        from src.backend.offline import run_offline_async_inference
-
         output_file = result_dir / "inference_results.jsonl"
 
         # check if output_file exists
         if Path(output_file).exists():
-            logger.info(f"Output file {output_file} already exists, skipping offline inference")
+            log_info(f"Output file {output_file} already exists, skipping offline inference")
         else:
             asyncio.run(run_offline_async_inference(
                 input_file=data_file,
-                output_file=output_file,
-                model_path=args.model,
+                output_file=output_file, 
+                model_path=args.model, 
                 dp_size=args.dp_size,
                 tp_size=args.tp_size,
                 batch_size=args.batch_size,
@@ -173,7 +175,6 @@ def main() -> None:
             ))
     
     if "llm-eval" in args.mode:
-        from src.backend.offline import run_offline_async_inference
         from src.data.extract import prepare_extraction_data
 
         infer_file = result_dir / "inference_results.jsonl"
@@ -181,10 +182,10 @@ def main() -> None:
         eval_output_file = result_dir / "eval_results.jsonl"
 
         if Path(eval_output_file).exists():
-            logger.info(f"Eval output {eval_output_file} exists, skipping extraction.")
+            log_info(f"Eval output {eval_output_file} exists, skipping extraction.")
         else:
             # Prepare extraction prompts from inference results
-            logger.info(f"Preparing extraction prompts from {infer_file}...")
+            log_info(f"Preparing extraction prompts from {infer_file}...")
             prepare_extraction_data(infer_file, eval_input_file)
 
             # Run LLM to extract answers

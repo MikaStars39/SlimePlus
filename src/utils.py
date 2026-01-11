@@ -13,7 +13,6 @@ from datasets import load_dataset
 import asyncio
 
 
-
 class StreamToLogger:
     """Redirect stdout/stderr to logger to ensure output is recorded in both file and console."""
 

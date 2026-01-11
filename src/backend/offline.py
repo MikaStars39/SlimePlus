@@ -36,18 +36,21 @@ async def run_offline_async_inference(
         tp_size=tp_size,
         mem_fraction_static=mem_fraction_static, # Reserved memory for KV cache
         # disable_cuda_graph=True, # Disable CUDA Graph to avoid RecursionError
-        log_level="error"
     )
 
     # 2. Stream Processing: Read and write line by line to handle large files
-    # We use standard 'with open' as it's simpler and sufficient for offline tasks
+    # Count total lines for progress bar
+    with open(input_file, "r", encoding="utf-8") as f:
+        total_lines = sum(1 for _ in f)
+
     with open(input_file, "r", encoding="utf-8") as f_in, open(output_file, "w", encoding="utf-8") as f_out:
         
         batch_data = []
-        print(f"Starting inference using {dp_size} GPUs (DP)...")
+        pbar = tqdm(total=total_lines, desc=f"Inference (DP={dp_size})")
         
         for line in f_in:
             if not line.strip():
+                pbar.update(1)
                 continue
             
             batch_data.append(json.loads(line))
@@ -56,7 +59,7 @@ async def run_offline_async_inference(
             if len(batch_data) >= batch_size:
                 prompts = [item["prompt"] for item in batch_data]
                 
-                # SGLang distributes these prompts across all 8 DP workers automatically
+                # SGLang distributes these prompts across all DP workers automatically
                 outputs = await llm.async_generate(prompts, sampling_params)
                 
                 # 4. Write results immediately to disk
@@ -64,8 +67,9 @@ async def run_offline_async_inference(
                     item["response"] = output["text"]
                     f_out.write(json.dumps(item, ensure_ascii=False) + "\n")
                 
-                f_out.flush() # Ensure data is written even if script crashes
-                batch_data = [] # Clear the batch for next set of lines
+                f_out.flush() 
+                pbar.update(len(batch_data))
+                batch_data = [] # Clear the batch
 
         # 5. Handle the remaining items in the last batch
         if batch_data:
@@ -74,6 +78,9 @@ async def run_offline_async_inference(
             for item, output in zip(batch_data, outputs):
                 item["response"] = output["text"]
                 f_out.write(json.dumps(item, ensure_ascii=False) + "\n")
+            pbar.update(len(batch_data))
+
+        pbar.close()
 
     # 6. Clean up resources
     llm.shutdown()
@@ -84,7 +91,7 @@ if __name__ == "__main__":
     input_file = "examples/debug.jsonl"
     output_file = "examples/debug_output.jsonl"
     batch_size = 256
-    dp_size = 1
+    dp_size = 8
     tp_size = 1
     mem_fraction_static = 0.8
     sampling_params = {
