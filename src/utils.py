@@ -72,8 +72,9 @@ def calculate_and_print_metrics(eval_output_file: Path, cache_dir: str = None):
         pass_at_k_scores = []
         for q_id, scores in q_map.items():
             all_scores.extend(scores)
-            # Pass@k is 1 if any sample is correct
-            pass_at_k_scores.append(1.0 if any(s > 0 for s in scores) else 0.0)
+            # Pass@k is 1 if any sample is fully correct (score == 1.0)
+            # This ensures Avg@1 == Pass@1 when K=1
+            pass_at_k_scores.append(1.0 if any(s >= 1.0 for s in scores) else 0.0)
         
         avg_k = sum(all_scores) / len(all_scores) if all_scores else 0
         pass_k = sum(pass_at_k_scores) / len(pass_at_k_scores) if pass_at_k_scores else 0
