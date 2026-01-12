@@ -2,85 +2,113 @@ import json
 import asyncio
 import sglang as sgl
 from tqdm.asyncio import tqdm
-# import aiofiles
 
 async def run_offline_async_inference(
     input_file: str, 
     output_file: str, 
     model_path: str, 
-    dp_size: int,
-    tp_size: int,
-    max_concurrency: int, 
-    mem_fraction_static: float,
-    sampling_params: dict,
-    batch_size: int,
+    chunk_size: int = 512,
+    dp_size: int = 1,
+    tp_size: int = 1,
+    mem_fraction_static: float = 0.90,
+    sampling_params: dict = None
 ):
+    if sampling_params is None:
+        sampling_params = {"temperature": 0.6, "top_p": 0.9, "max_new_tokens": 2048}
+
+    print(f"Initializing Engine with model: {model_path}")
+    
     # 1. Initialize Engine
+    # SGLang Engine handles continuous batching internally.
     llm = sgl.Engine(
         model_path=model_path,
         dp_size=dp_size, 
         tp_size=tp_size,
         mem_fraction_static=mem_fraction_static,
-        log_level="error"
+        log_level="error",
+        disable_radix_cache=True, # Set based on your specific needs (e.g., usually True for eval/benchmarks)
+        trust_remote_code=True
     )
 
-    # 2. Worker Logic (Consumer)
-    # 使用 Queue 解耦，限制并发数，防止内存爆炸
-    queue = asyncio.Queue(maxsize=max_concurrency * 2)
-    
-    # 计算总行数用于进度条（同步读取即可，速度很快）
-    total_lines = sum(1 for _ in open(input_file, 'r', encoding='utf-8') if _.strip())
-    pbar = tqdm(total=total_lines, desc=f"Inference (DP={dp_size})")
+    # 2. Wrapper for single item generation
+    # This binds the result back to the original item dictionary.
+    async def generate_wrapper(item):
+        output = await llm.async_generate(item["prompt"], sampling_params)
+        item["response"] = output["text"]
+        return item
 
-    async def worker(f_out):
-        while True:
-            # 从队列获取数据
-            item = await queue.get()
-            if item is None: 
-                # 结束信号
-                queue.task_done()
-                break
-            
+    # 3. Batch Processor
+    async def process_chunk(batch_data, f_out, pbar):
+        # Create a list of tasks for the whole chunk
+        tasks = [generate_wrapper(item) for item in batch_data]
+        
+        # 'as_completed' yields tasks as soon as they finish, regardless of order.
+        # This allows immediate writing to disk.
+        for task in asyncio.as_completed(tasks):
             try:
-                # 异步推理
-                output = await llm.async_generate(item["prompt"], sampling_params)
-                item["response"] = output["text"]
+                result_item = await task
                 
-                # 同步写入 (虽然是同步，但去掉flush后通常非常快，不会成为瓶颈)
-                line = json.dumps(item, ensure_ascii=False) + "\n"
-                f_out.write(line)
+                # Write immediately
+                f_out.write(json.dumps(result_item, ensure_ascii=False) + "\n")
+                f_out.flush() # Ensure data is written to disk immediately
                 
+                # Update progress bar
+                pbar.update(1)
             except Exception as e:
                 print(f"Error processing item: {e}")
-            finally:
-                pbar.update(1)
-                queue.task_done()
 
-    # 3. Producer Logic (File Reader)
-    async def producer():
-        # 同步读取文件，但逐行放入异步队列
-        with open(input_file, 'r', encoding='utf-8') as f:
-            for line in f:
-                if line.strip():
-                    await queue.put(json.loads(line))
-        
-        # 发送结束信号给所有 worker
-        for _ in range(max_concurrency):
-            await queue.put(None)
+    # 4. Main Logic
+    print("Counting total lines...")
+    total_lines = sum(1 for _ in open(input_file, 'r', encoding='utf-8') if _.strip())
+    print(f"Starting Inference on {total_lines} items...")
 
-    # 4. Run Pipeline
-    # 使用标准的 open
-    with open(output_file, "w", encoding="utf-8") as f_out:
-        # 启动消费者 (Workers)
-        workers = [asyncio.create_task(worker(f_out)) for _ in range(max_concurrency)]
+    current_batch = []
+    
+    with open(input_file, 'r', encoding='utf-8') as f_in, \
+         open(output_file, 'w', encoding='utf-8') as f_out:
         
-        # 启动生产者
-        await producer()
+        pbar = tqdm(total=total_lines, desc="Inference")
         
-        # 等待所有任务完成
-        await queue.join()
-        await asyncio.gather(*workers)
+        for line in f_in:
+            if not line.strip(): continue
+            
+            try:
+                data = json.loads(line)
+                current_batch.append(data)
+                
+                # Process when chunk is full
+                if len(current_batch) >= chunk_size:
+                    await process_chunk(current_batch, f_out, pbar)
+                    current_batch = [] # Reset buffer
+                    
+            except json.JSONDecodeError:
+                print(f"Skipping invalid JSON: {line[:50]}...")
 
-    pbar.close()
+        # Process remaining items
+        if current_batch:
+            await process_chunk(current_batch, f_out, pbar)
+            
+        pbar.close()
+
     llm.shutdown()
-    print(f"Done! Results saved to {output_file}")
+    print(f"\nDone! Results saved to {output_file}")
+
+# Execution Entry Point
+if __name__ == "__main__":
+    # Define parameters here
+    params = {
+        "temperature": 0.6, 
+        "top_p": 0.9, 
+        "max_new_tokens": 30000 
+    }
+
+    asyncio.run(run_offline_async_inference(
+        input_file="/mnt/llm-train/users/explore-train/qingyu/MikaEval/outputs/20260110_173129_gspo_qwen30ba3b_0000223_slime_new/data.jsonl",
+        output_file="/mnt/llm-train/users/explore-train/qingyu/MikaEval/outputs/20260110_173129_gspo_qwen30ba3b_0000223_slime_new/inference_results.jsonl",
+        model_path="/mnt/llm-train/users/explore-train/qingyu/PeRL/outputs/20260110_173129_gspo_qwen30ba3b/iter_0000223_hf",
+        chunk_size=512,
+        dp_size=8,
+        tp_size=1,
+        mem_fraction_static=0.9,
+        sampling_params=params
+    ))

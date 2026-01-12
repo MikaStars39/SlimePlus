@@ -68,8 +68,6 @@ def main() -> None:
                 model_path=args.model, 
                 dp_size=args.dp_size,
                 tp_size=args.tp_size,
-                max_concurrency=args.max_concurrency,
-                batch_size=args.batch_size,
                 mem_fraction_static=args.gpu_memory_utilization,
                 sampling_params={
                     "temperature": args.temperature,
@@ -78,7 +76,7 @@ def main() -> None:
                 },
             ))
     
-    # ------------------------------ 3. LLM Extraction (Optional) ------------------------------ 
+    # ------------------------------ 3. LLM Extraction ------------------------------ 
     if args.mode in ["all", "llm-eval"]:
         from src.data.extract import prepare_extraction_data
         infer_file = result_dir / "inference_results.jsonl"
@@ -101,28 +99,16 @@ def main() -> None:
                 model_path=eval_model_path,
                 dp_size=args.dp_size,
                 tp_size=args.tp_size,
-                max_concurrency=args.max_concurrency,
-                batch_size=args.batch_size,
                 mem_fraction_static=args.gpu_memory_utilization,
-                sampling_params={"temperature": 0.0, "max_new_tokens": 512},
+                sampling_params={"temperature": 0.7, "top_p": 0.9, "max_new_tokens": 512},
             ))
-            
-            # Clean up: Remove the large 'prompt' field from eval_results.jsonl
-            logging.info(f"Cleaning up extraction results...")
-            temp_output = result_dir / "eval_results_clean.jsonl"
-            with open(eval_output_file, "r", encoding="utf-8") as f_in, \
-                 open(temp_output, "w", encoding="utf-8") as f_out:
-                for line in f_in:
-                    if line.strip():
-                        data = json.loads(line)
-                        data.pop("prompt", None)
-                        f_out.write(json.dumps(data, ensure_ascii=False) + "\n")
-            temp_output.replace(eval_output_file)
 
     # ------------------------------ 4. Calculate Accuracy ------------------------------ 
     if args.mode in ["all", "llm-eval"]:
+        from src.reward.reward import extract_metrics_from_file
+        results = extract_metrics_from_file(eval_output_file)
+        
         from src.utils import calculate_and_print_metrics
-        eval_output_file = result_dir / "eval_results.jsonl"
         calculate_and_print_metrics(eval_output_file, cache_dir=args.cache_dir)
 
 if __name__ == "__main__":
