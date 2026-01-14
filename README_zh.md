@@ -53,6 +53,7 @@ MODE="infer" # infer, rule-eval, llm-eval
 然后我们需要做judge，也就是看每个答案对不对，同样复制一份`examples/llm_based_eval.sh`，然后按照之前的改法改好对应的路径，注意`OUTPUT_DIR`需要一样，因为judge的时候会去这个下面找推理的结果
 
 judge完以后，只需要`python view.py [你的output dir]`就可以自动生成如下类似的markdown表格：
+
 ```
 | Dataset | Count | Accuracy (Pass@1) | Pass@Max | Format Accuracy |
 | :--- | :---: | :---: | :---: | :---: |
