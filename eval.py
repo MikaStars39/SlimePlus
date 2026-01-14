@@ -33,6 +33,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-p", type=float, default=1.0)
     parser.add_argument("--max-new-tokens", type=int, default=4096)
+
+    # LLM Extraction (Step 3) Sampling Params
+    # Extraction should be deterministic + short to avoid repetitive / rambling outputs.
+    parser.add_argument("--eval-temperature", type=float, default=0.0)
+    parser.add_argument("--eval-top-p", type=float, default=1.0)
+    parser.add_argument("--eval-max-new-tokens", type=int, default=128)
     
     # Template
     parser.add_argument("--prompt-format", default="slime", help="Prompt template to use.")
@@ -55,6 +61,20 @@ def main() -> None:
             output_file=data_file,
             cache_dir=args.cache_dir,
         )
+        # Apply prompt template + (if supported) model chat template before inference.
+        # `prepare_pass_at_k_jsonl` writes raw questions into `prompt`; many instruct/chat models
+        # behave much better if we wrap the prompt using the official tokenizer chat template.
+        from src.data.template import apply_template_to_jsonl, PROMPT_TEMPLATES
+        infer_input_file = data_file
+        formatted_input_file = result_dir / "data.chat.jsonl"
+        logging.info(f"Applying prompt/chat template for inference (format={args.prompt_format})...")
+        apply_template_to_jsonl(
+            input_file=str(data_file),
+            output_file=str(formatted_input_file),
+            model_path=str(args.model),
+            user_template=PROMPT_TEMPLATES.get(args.prompt_format)
+        )
+        infer_input_file = formatted_input_file
 
     # ------------------------------ 2. Inference ------------------------------ 
     if args.mode in ["all", "infer"]:
@@ -63,7 +83,7 @@ def main() -> None:
             logging.info(f"Inference results exist at {output_file}, skipping.")
         else:
             asyncio.run(run_offline_async_inference(
-                input_file=str(data_file),
+                input_file=str(infer_input_file),
                 output_file=str(output_file), 
                 model_path=args.model, 
                 dp_size=args.dp_size,
@@ -93,14 +113,30 @@ def main() -> None:
             eval_model_path = args.eval_model if args.eval_model else args.model
             logging.info(f"Using model {eval_model_path} for extraction.")
 
-            asyncio.run(run_offline_async_inference(
+            eval_infer_input_file = eval_input_file
+            from src.data.template import apply_template_to_jsonl
+            eval_chat_input_file = result_dir / "eval_input.chat.jsonl"
+            logging.info("Applying chat template to eval_input.jsonl for LLM extraction...")
+            apply_template_to_jsonl(
                 input_file=str(eval_input_file),
+                output_file=str(eval_chat_input_file),
+                model_path=str(eval_model_path),
+                user_template="{problem}"
+            )
+            eval_infer_input_file = eval_chat_input_file
+
+            asyncio.run(run_offline_async_inference(
+                input_file=str(eval_infer_input_file),
                 output_file=str(eval_output_file),
                 model_path=eval_model_path,
                 dp_size=args.dp_size,
                 tp_size=args.tp_size,
                 mem_fraction_static=args.gpu_memory_utilization,
-                sampling_params={"temperature": 0.7, "top_p": 0.9, "max_new_tokens": 512},
+                sampling_params={
+                    "temperature": args.eval_temperature,
+                    "top_p": args.eval_top_p,
+                    "max_new_tokens": args.eval_max_new_tokens,
+                },
             ))
 
     # ------------------------------ 4. Calculate Accuracy ------------------------------ 

@@ -32,8 +32,8 @@ def apply_template_to_jsonl(
     input_file: str, 
     output_file: str, 
     model_path: str, 
-    system_prompt: str = "You are a helpful assistant.",
-    user_template: str = "{prompt}"
+    system_prompt: str = None,
+    user_template: str = PROMPT_TEMPLATES["slime"]
 ):
     """
     Reads a JSONL file and wraps the 'prompt' field into a model-specific chat template.
@@ -54,24 +54,35 @@ def apply_template_to_jsonl(
                 continue
                 
             data = json.loads(line)
-            raw_question = data["prompt"]
+            raw_question = data.get("prompt", "")
 
-            # 3. Format the user prompt 
-            # We use .replace() instead of .format() to avoid IndexError with LaTeX braces like \boxed{}
-            formatted_user_content = user_template.replace("{prompt}", raw_question)
+            # 3. Format the user prompt
+            # We use .replace() instead of .format() to avoid IndexError with LaTeX braces like \boxed{}.
+            # Support both "{problem}" and legacy "{prompt}" placeholders.
+            formatted_user_content = (
+                user_template.replace("{problem}", raw_question).replace("{prompt}", raw_question)
+            )
 
             # 4. Create the chat message structure
             messages = [
+                {"role": "user", "content": formatted_user_content},
+            ] if system_prompt is None else [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": formatted_user_content},
             ]
 
             # 5. Apply the official chat template
-            final_prompt = tokenizer.apply_chat_template(
-                messages, 
-                tokenize=False, 
-                add_generation_prompt=True
-            )
+            try:
+                final_prompt = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True
+                )
+            except Exception as e:
+                # Fallback for tokenizers/models without chat_template support.
+                # Keep the pipeline running by using the formatted user content directly.
+                print(f"[template] apply_chat_template failed; fallback to raw prompt. Error: {e}")
+                final_prompt = formatted_user_content
 
             # 6. Save the record
             data["prompt"] = final_prompt

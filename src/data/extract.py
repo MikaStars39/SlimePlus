@@ -17,10 +17,15 @@ def prepare_extraction_data(
     """
     if prompt_template is None:
         prompt_template = (
-            "Please extract the final numerical or concise answer from the following reasoning process. "
+            "Here is a easoning process from another model:\n{response}\n\n"
+            "Please extract the final answer from the following reasoning process. "
             "Respond only with the answer wrapped in \\boxed{}.\n\n"
-            "Reasoning Process:\n{response}\n\n"
-            "You should ONLY output \\boxed{{answer}} format. Do not output anything else."
+            "You should ONLY output \\boxed{{answer}} format. Do not think, or CoT. Do not output anything else. Just the answer.\n\n"
+            "Here is an example of the correct output format: \\boxed{{123}}.\n\n"
+            "Here is an example of the incorrect output format: 123.\n\n"
+            "Here is an example of the incorrect output format: $123$.\n\n"
+            "Here is an example of the incorrect output format: $123$.\n\n"
+            "Now you will start to extract the answer."
         )
 
     with open(input_file, "r", encoding="utf-8") as f_in, open(output_file, "w", encoding="utf-8") as f_out:

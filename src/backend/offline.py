@@ -75,7 +75,32 @@ async def run_offline_async_inference(
     # 2. Wrapper for single item generation
     # This binds the result back to the original item dictionary.
     async def generate_wrapper(item):
-        output = await llm.async_generate(item["prompt"], sampling_params)
+        # SGLang sampling params can vary slightly across versions/builds.
+        # If the user passes an unsupported key (e.g., stop / penalties), fail once and retry
+        # with a conservative filtered param set to keep long eval jobs from crashing.
+        async def _generate_with_fallback(prompt: str, params: Dict[str, Any]) -> Dict[str, Any]:
+            try:
+                return await llm.async_generate(prompt, params)
+            except Exception as e:
+                # Best-effort fallback: drop a few common optional keys and retry once.
+                drop_keys = {
+                    "stop",
+                    "stop_token_ids",
+                    "repetition_penalty",
+                    "frequency_penalty",
+                    "presence_penalty",
+                    "min_new_tokens",
+                }
+                filtered = {k: v for k, v in (params or {}).items() if k not in drop_keys}
+                if filtered == (params or {}):
+                    raise
+                print(
+                    f"[offline] async_generate failed with optional sampling params; retrying without "
+                    f"{sorted(list(drop_keys))}. Error: {e}"
+                )
+                return await llm.async_generate(prompt, filtered)
+
+        output = await _generate_with_fallback(item["prompt"], sampling_params)
         item["response"] = output["text"]
         # Token usage (best-effort)
         pt, ct, tt = _extract_token_counts(output)
