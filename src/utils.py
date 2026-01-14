@@ -106,49 +106,6 @@ def calculate_and_print_metrics(eval_output_file: Path, cache_dir: str = None):
     results = extract_metrics_from_file(eval_output_file)
     display_metrics_report(results)
 
-def _calculate_matrics(
-    updated_items: List[Dict]
-) -> Dict[str, Dict[str, float]]:
-    # Calculate final metrics
-    raw_data = {}
-    for item in updated_items:
-        ds_name = item.get("source", "unknown")
-        q_id = item.get("question_id", "unknown")
-        score_tuple = item.get("score", (0.0, 0.0))
-        # Extract the actual score (first element of tuple)
-        score = float(score_tuple[0]) if isinstance(score_tuple, (list, tuple)) and len(score_tuple) > 0 else float(score_tuple)
-
-        raw_data.setdefault(ds_name, {}).setdefault(q_id, []).append(score)
-
-    final_results = {}
-    for ds_name, q_map in raw_data.items():
-        all_scores = []
-        pass_at_k_scores = []
-
-        for q_id, scores in q_map.items():
-            all_scores.extend(scores)
-            pass_at_k_scores.append(1.0 if any(s >= 1.0 for s in scores) else 0.0)
-
-        final_results[ds_name] = {
-            "avg_k": sum(all_scores) / len(all_scores) if all_scores else 0,
-            "pass_k": sum(pass_at_k_scores) / len(pass_at_k_scores) if pass_at_k_scores else 0
-        }
-
-    # Overall metrics across all datasets
-    overall_all_scores = []
-    overall_pass_at_k_scores = []
-    for ds_name, q_map in raw_data.items():
-        for q_id, scores in q_map.items():
-            overall_all_scores.extend(scores)
-            overall_pass_at_k_scores.append(1.0 if any(s >= 1.0 for s in scores) else 0.0)
-
-    final_results["overall"] = {
-        "avg_k": sum(overall_all_scores) / len(overall_all_scores) if overall_all_scores else 0,
-        "pass_k": sum(overall_pass_at_k_scores) / len(overall_pass_at_k_scores) if overall_pass_at_k_scores else 0,
-    }
-
-    return final_results
-
 def _extract_answer(text: str) -> str:
     """Extract answer from model response using regex (boxed or last value)."""
     if not text:

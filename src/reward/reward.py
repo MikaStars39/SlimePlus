@@ -4,91 +4,75 @@ from typing import Dict, List
 from pathlib import Path
 
 from tqdm import tqdm
-from src.reward.math_verify_reward import grade_answer
-from src.utils import _calculate_matrics, _extract_answer
+from datasets import load_dataset
 
-def _math_eval(
-    item: Dict
+from src.reward.if_eval.if_eval import if_judge
+from src.reward.math.math_verify_reward import math_judge
+
+def _calculate_matrics(
+    updated_items: List[Dict]
+) -> Dict[str, Dict[str, float]]:
+    # Calculate final metrics
+    raw_data = {}
+    for item in updated_items:
+        ds_name = item.get("source", "unknown")
+        q_id = item.get("question_id", "unknown")
+        score = 1.0 if item.get("pass", False) else 0.0
+        raw_data.setdefault(ds_name, {}).setdefault(q_id, []).append(score)
+
+    final_results = {}
+    for ds_name, q_map in raw_data.items():
+        all_scores = []
+        pass_at_k_scores = []
+
+        for q_id, scores in q_map.items():
+            all_scores.extend(scores)
+            pass_at_k_scores.append(1.0 if any(s >= 1.0 for s in scores) else 0.0)
+
+        final_results[ds_name] = {
+            "avg_k": sum(all_scores) / len(all_scores) if all_scores else 0,
+            "pass_k": sum(pass_at_k_scores) / len(pass_at_k_scores) if pass_at_k_scores else 0
+        }
+
+    # Overall metrics across all datasets
+    overall_all_scores = []
+    overall_pass_at_k_scores = []
+    for ds_name, q_map in raw_data.items():
+        for q_id, scores in q_map.items():
+            overall_all_scores.extend(scores)
+            overall_pass_at_k_scores.append(1.0 if any(s >= 1.0 for s in scores) else 0.0)
+
+    final_results["overall"] = {
+        "avg_k": sum(overall_all_scores) / len(overall_all_scores) if overall_all_scores else 0,
+        "pass_k": sum(overall_pass_at_k_scores) / len(overall_pass_at_k_scores) if overall_pass_at_k_scores else 0,
+    }
+
+    return final_results
+
+def judge_router(
+    instance: Dict
 ) -> Dict:
-
-    label = item.get("label", "")
-    raw_eval_res = item.get("response", "") 
-
-    pred_ans = _extract_answer(raw_eval_res)
-    if pred_ans is None:
-        item["pred"] = pred_ans
-        item["score"] = (0.0, 0.0)
-        return None, item
-
-    score = grade_answer(f"${pred_ans}$", f"${label}$")
-
-    item["pred"] = pred_ans
-    item["score"] = score
-
-    return item, None
-
-def _ifeval_eval(
-    item: Dict
-) -> Dict:
-    response = item.get("response", "")
-    # TODO: Implement ifeval logic
-    return None, item
+    if instance.get("eval_type", "ifeval") == "ifeval":
+        return if_judge(instance)
+    else:
+        return math_judge(instance)
 
 def eval_results(
     eval_output_file: Path,
-    final_eval_output_file: Path
+    final_eval_output_file: Path,
+    n_proc: int = 32
 ) -> Dict[str, Dict[str, float]]:
     
-    updated_lines = []
-    updated_items = []
-    failed_items = []
-
-    # Get total lines for progress bar
-    with open(eval_output_file, "r", encoding="utf-8") as f:
-        total = sum(1 for _ in f)
-
-    with open(eval_output_file, "r", encoding="utf-8") as f:
-        for line in tqdm(f, total=total, desc="Evaluating results"):
-            if not line.strip(): 
-                continue
-            
-            item = json.loads(line)
-            eval_type = item.get("eval_type", "math")
-           
-            updated_item, failed_item = None, None
-            if eval_type == "math":
-                updated_item, failed_item = _math_eval(item)
-            elif eval_type == "ifeval":
-                updated_item, failed_item = _ifeval_eval(item)
-            
-            if failed_item is not None:
-                failed_items.append(failed_item)
-                updated_items.append(failed_item)
-                updated_lines.append(json.dumps(failed_item, ensure_ascii=False))
-            elif updated_item is not None:
-                updated_items.append(updated_item)
-                updated_lines.append(json.dumps(updated_item, ensure_ascii=False))
-
-    # ------------------ write the updated items to the file ------------------ 
-    new_eval_output_file = eval_output_file.with_suffix(f".scored{eval_output_file.suffix}")
-    with open(new_eval_output_file, "w", encoding="utf-8") as f:
-        for line in updated_lines:
-            item = json.loads(line)
-            cleaned_item = {k: v for k, v in item.items() if k not in ["prompt", "response"]}
-            f.write(json.dumps(cleaned_item, ensure_ascii=False) + "\n")
-    
-    # ------------------ write the failed items to the file ------------------ 
-    with open(eval_output_file.with_suffix(f".failed{eval_output_file.suffix}"), "w", encoding="utf-8") as f:
-        for item in failed_items:
-            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+    results = load_dataset("json", data_files=eval_output_file)
+    results = results.map(judge_router, num_proc=n_proc)
 
     # ------------------ calculate the metrics and return ------------------ 
-    results = _calculate_matrics(updated_items)
+    results = _calculate_matrics(list(results))
     with open(final_eval_output_file, "w", encoding="utf-8") as f:
-        for item in results.items():
+        for item in results:
             f.write(json.dumps(item, ensure_ascii=False) + "\n")
     
-    return results
+    return metrics
 
 if __name__ == "__main__":
     test_res = "The answer is \\boxed{m/frac{2}{3}}"

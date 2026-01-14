@@ -81,6 +81,8 @@ def apply_template_to_jsonl(
             if user_template == "auto": # this is only for inference (for questions)
                 if "gpqa_diamond" in data_source:
                     current_template = PROMPT_TEMPLATES["GPQA-Diamond"]
+                elif "ifeval" in data_source:
+                    current_template = PROMPT_TEMPLATES["blank"]
                 else:
                     current_template = PROMPT_TEMPLATES["slime"]
             elif user_template in PROMPT_TEMPLATES:
