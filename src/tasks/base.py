@@ -5,9 +5,7 @@ from datasets import load_dataset
 
 import src.tasks as tasks
 
-
 DATASETS = {
-
 # --------------------------- math ------------------------------
 
     "aime2024": {
@@ -93,7 +91,6 @@ DATASETS = {
         "eval_type": "ifeval",
     },
 }
-
 
 def get_question_text(row):
     """Identify the question/problem column in different dataset schemas."""
