@@ -195,7 +195,7 @@ async def run_offline_async_inference(
         tok_per_s = total_tokens / elapsed
         print(f"Throughput: {items_per_s:.2f} items/s, {tok_per_s:.2f} tokens/s (elapsed {elapsed:.2f}s)")
     else:
-        print(f"Throughput: {items_per_s:.2f} items/s (elapsed {elapsed:.2f}s). token统计在当前返回结构中不可用。")
+        print(f"Throughput: {items_per_s:.2f} items/s (elapsed {elapsed:.2f}s).")
     print(f"\nDone! Results saved to {output_file}")
 
 # Execution Entry Point
