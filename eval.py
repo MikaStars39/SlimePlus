@@ -174,7 +174,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="MikaEval: Offline Inference and Evaluation")
     
     # Execution Mode
-    parser.add_argument("--mode", choices=["infer", "llm-eval", "all"], default="infer")
+    parser.add_argument("--mode", choices=["prepare", "infer", "llm-eval", "metrics", "all"], default="infer")
     
     # Paths
     parser.add_argument("--result-dir", required=True, help="Directory for output results.")
@@ -224,7 +224,7 @@ def main() -> None:
         eval_output_file = llm_evaluation(args=args, result_dir=result_dir)
 
     # ------------------------------ 4. Calculate Metrics ------------------------------
-    if args.mode in ["all", "calculate-metrics"]:
+    if args.mode in ["all", "metrics"]:
         calculate_metrics(args=args, result_dir=result_dir)
 
 if __name__ == "__main__":
