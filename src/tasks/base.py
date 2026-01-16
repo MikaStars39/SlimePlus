@@ -97,7 +97,7 @@ DATASETS = {
         "custom_args": [],
         "need_llm_extract": False,
         "eval_type": "math",
-    }
+    },
 
     "DAPO_Math_17k_Processed": {
         "hf_name": "open-r1/DAPO-Math-17k-Processed",

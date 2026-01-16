@@ -80,11 +80,11 @@ class TaskManager:
         Returns:
             Path to inference_results.jsonl
         """
-        if self.paths.infer_output_file.exists():
+        resume = self.paths.infer_output_file.exists()
+        if resume:
             logging.info(
-                f"Inference results exist at {self.paths.infer_output_file}, skipping."
+                f"Inference results exist at {self.paths.infer_output_file}, resuming by id."
             )
-            return self.paths.infer_output_file
 
         asyncio.run(
             run_offline_async_inference(
@@ -93,7 +93,9 @@ class TaskManager:
                 model_path=self.args.model,
                 dp_size=self.args.dp_size,
                 tp_size=self.args.tp_size,
+                max_inflight=self.args.max_concurrency,
                 mem_fraction_static=self.args.gpu_memory_utilization,
+                resume=resume,
                 sampling_params={
                     "temperature": self.args.temperature,
                     "top_p": self.args.top_p,

@@ -1,5 +1,6 @@
 import json
 import asyncio
+import os
 import sglang as sgl
 from tqdm.asyncio import tqdm
 import time
@@ -10,10 +11,14 @@ async def run_offline_async_inference(
     output_file: str, 
     model_path: str, 
     chunk_size: int = 512,
+    max_inflight: Optional[int] = None,
     dp_size: int = 1,
     tp_size: int = 1,
     mem_fraction_static: float = 0.90,
-    sampling_params: dict = None
+    sampling_params: dict = None,
+    flush_every_n: int = 1,
+    flush_interval_s: Optional[float] = None,
+    resume: bool = False,
 ):
 
     if sampling_params is None:
@@ -70,6 +75,8 @@ async def run_offline_async_inference(
     acc_completion_tokens = 0
     acc_total_tokens = 0
     saw_any_token_counts = False
+    pending_writes = 0
+    last_flush_t = time.perf_counter()
 
     # 2. Wrapper for single item generation
     # This binds the result back to the original item dictionary.
@@ -106,85 +113,139 @@ async def run_offline_async_inference(
         item["_token_usage"] = {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt}
         return item
 
-    # 3. Batch Processor
-    async def process_chunk(batch_data, f_out, pbar):
+    # 3. Streaming Processor (producer-consumer) to reduce batching bubbles
+    if max_inflight is None:
+        max_inflight = chunk_size
+    max_inflight = max(1, int(max_inflight))
+    queue_max = max(1, max_inflight * 2)
+    work_queue: asyncio.Queue = asyncio.Queue(maxsize=queue_max)
+    write_lock = asyncio.Lock()
+
+    async def _write_result(result_item, f_out, pbar):
         nonlocal acc_prompt_tokens, acc_completion_tokens, acc_total_tokens, saw_any_token_counts
-        # Create a list of tasks for the whole chunk
-        tasks = [generate_wrapper(item) for item in batch_data]
-        
-        # 'as_completed' yields tasks as soon as they finish, regardless of order.
-        # This allows immediate writing to disk.
-        for task in asyncio.as_completed(tasks):
-            try:
-                result_item = await task
-                
-                # Write immediately
-                # 默认不把 _token_usage 落盘（避免污染结果文件）
-                token_usage = result_item.pop("_token_usage", None)
-                f_out.write(json.dumps(result_item, ensure_ascii=False) + "\n")
-                f_out.flush() # Ensure data is written to disk immediately
-                
-                # Update progress bar
-                pbar.update(1)
+        nonlocal pending_writes, last_flush_t
+        # 默认不把 _token_usage 落盘（避免污染结果文件）
+        token_usage = result_item.pop("_token_usage", None)
+        f_out.write(json.dumps(result_item, ensure_ascii=False) + "\n")
+        pending_writes += 1
+        do_flush = False
+        if flush_every_n <= 1:
+            do_flush = True
+        elif pending_writes >= flush_every_n:
+            do_flush = True
+        if flush_interval_s is not None and flush_interval_s >= 0:
+            if (time.perf_counter() - last_flush_t) >= flush_interval_s:
+                do_flush = True
+        if do_flush:
+            f_out.flush() # Ensure data is written to disk
+            pending_writes = 0
+            last_flush_t = time.perf_counter()
 
-                # Update throughput stats
-                if isinstance(token_usage, dict):
-                    pt = token_usage.get("prompt_tokens")
-                    ct = token_usage.get("completion_tokens")
-                    tt = token_usage.get("total_tokens")
-                    if isinstance(pt, int):
-                        acc_prompt_tokens += pt
-                        saw_any_token_counts = True
-                    if isinstance(ct, int):
-                        acc_completion_tokens += ct
-                        saw_any_token_counts = True
-                    if isinstance(tt, int):
-                        acc_total_tokens += tt
-                        saw_any_token_counts = True
+        # Update progress bar
+        pbar.update(1)
 
-                elapsed = max(1e-9, time.perf_counter() - start_t)
-                items_per_s = pbar.n / elapsed
-                if saw_any_token_counts:
-                    # Prefer total_tokens if present, else prompt+completion
-                    total_tokens = acc_total_tokens if acc_total_tokens > 0 else (acc_prompt_tokens + acc_completion_tokens)
-                    tok_per_s = total_tokens / elapsed
-                    pbar.set_postfix({"items/s": f"{items_per_s:.2f}", "tok/s": f"{tok_per_s:.2f}"})
-                else:
-                    pbar.set_postfix({"items/s": f"{items_per_s:.2f}"})
-            except Exception as e:
-                print(f"Error processing item: {e}")
+        # Update throughput stats
+        if isinstance(token_usage, dict):
+            pt = token_usage.get("prompt_tokens")
+            ct = token_usage.get("completion_tokens")
+            tt = token_usage.get("total_tokens")
+            if isinstance(pt, int):
+                acc_prompt_tokens += pt
+                saw_any_token_counts = True
+            if isinstance(ct, int):
+                acc_completion_tokens += ct
+                saw_any_token_counts = True
+            if isinstance(tt, int):
+                acc_total_tokens += tt
+                saw_any_token_counts = True
 
-    # 4. Main Logic
-    print("Counting total lines...")
-    total_lines = sum(1 for _ in open(input_file, 'r', encoding='utf-8') if _.strip())
-    print(f"Starting Inference on {total_lines} items...")
+        elapsed = max(1e-9, time.perf_counter() - start_t)
+        items_per_s = pbar.n / elapsed
+        if saw_any_token_counts:
+            # Prefer total_tokens if present, else prompt+completion
+            total_tokens = acc_total_tokens if acc_total_tokens > 0 else (acc_prompt_tokens + acc_completion_tokens)
+            tok_per_s = total_tokens / elapsed
+            pbar.set_postfix({"items/s": f"{items_per_s:.2f}", "tok/s": f"{tok_per_s:.2f}"})
+        else:
+            pbar.set_postfix({"items/s": f"{items_per_s:.2f}"})
 
-    current_batch = []
-    
-    with open(input_file, 'r', encoding='utf-8') as f_in, \
-         open(output_file, 'w', encoding='utf-8') as f_out:
-        
-        pbar = tqdm(total=total_lines, desc="Inference")
-        
+    async def producer(f_in, num_workers: int, existing_ids: set):
         for line in f_in:
-            if not line.strip(): continue
-            
+            if not line.strip():
+                continue
             try:
                 data = json.loads(line)
-                current_batch.append(data)
-                
-                # Process when chunk is full
-                if len(current_batch) >= chunk_size:
-                    await process_chunk(current_batch, f_out, pbar)
-                    current_batch = [] # Reset buffer
-                    
+                if existing_ids and data.get("id") in existing_ids:
+                    continue
+                await work_queue.put(data)
             except json.JSONDecodeError:
                 print(f"Skipping invalid JSON: {line[:50]}...")
+        for _ in range(num_workers):
+            await work_queue.put(None)
 
-        # Process remaining items
-        if current_batch:
-            await process_chunk(current_batch, f_out, pbar)
-            
+    async def worker(f_out, pbar):
+        while True:
+            item = await work_queue.get()
+            if item is None:
+                work_queue.task_done()
+                break
+            try:
+                result_item = await generate_wrapper(item)
+                async with write_lock:
+                    await _write_result(result_item, f_out, pbar)
+            except Exception as e:
+                print(f"Error processing item: {e}")
+            finally:
+                work_queue.task_done()
+
+    # 4. Main Logic
+    def _count_nonempty_lines(path: str) -> int:
+        return sum(1 for _ in open(path, 'r', encoding='utf-8') if _.strip())
+
+    def _load_existing_ids(path: str) -> set:
+        ids = set()
+        if not os.path.exists(path):
+            return ids
+        with open(path, "r", encoding="utf-8") as f_exist:
+            for line in f_exist:
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if row.get("response") is not None and row.get("id") is not None:
+                    ids.add(row.get("id"))
+        return ids
+
+    print("Counting total lines...")
+    total_lines = _count_nonempty_lines(input_file)
+    existing_ids = _load_existing_ids(output_file) if resume else set()
+    remaining_lines = max(0, total_lines - len(existing_ids))
+    if resume and existing_ids:
+        print(f"Resuming from {len(existing_ids)} completed items...")
+    print(f"Starting Inference on {remaining_lines} items (total {total_lines})...")
+
+    if resume and remaining_lines == 0:
+        print("Nothing to do (output already complete).")
+        llm.shutdown()
+        return
+
+    out_mode = "a" if resume and existing_ids else "w"
+    with open(input_file, 'r', encoding='utf-8') as f_in, \
+         open(output_file, out_mode, encoding='utf-8') as f_out:
+        
+        pbar = tqdm(total=remaining_lines, desc="Inference")
+
+        num_workers = max_inflight
+        producer_task = asyncio.create_task(producer(f_in, num_workers, existing_ids))
+        workers = [asyncio.create_task(worker(f_out, pbar)) for _ in range(num_workers)]
+
+        await producer_task
+        await work_queue.join()
+        for w in workers:
+            await w
+
         pbar.close()
 
     llm.shutdown()

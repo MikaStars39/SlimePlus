@@ -15,8 +15,10 @@ def load_DAPO_Math_17k_Processed(
     
     for idx, row in enumerate(tqdm(dataset, desc=f"Loading {dataset_name}")):
         
-        question = get_question_text(row)
-        answer = get_answer_text(row)
+        question = row["prompt"]
+        answer = row["solution"]
+        row.pop("prompt")
+        row.pop("solution")
 
         for sample_idx in range(k):
             # Create a unique ID for each attempt
@@ -31,7 +33,7 @@ def load_DAPO_Math_17k_Processed(
                 "sample_index": sample_idx,
                 "need_llm_extract": DATASETS[dataset_name]["need_llm_extract"],
                 "label": answer,
-                
+                **row
             }
             
             f_out.write(json.dumps(record, ensure_ascii=False) + "\n")
