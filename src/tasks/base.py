@@ -98,6 +98,14 @@ DATASETS = {
         "need_llm_extract": False,
         "eval_type": "math",
     }
+
+    "DAPO_Math_17k_Processed": {
+        "hf_name": "open-r1/DAPO-Math-17k-Processed",
+        "split": "train",
+        "custom_args": [],
+        "need_llm_extract": True,
+        "eval_type": "math",
+    }
 }
 
 def get_question_text(row):

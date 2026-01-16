@@ -28,6 +28,7 @@ from src.tasks.mmlu_pro import load_mmlu_pro  # noqa: F401
 from src.tasks.ifeval import load_ifeval  # noqa: F401
 from src.tasks.gpqa_diamond import load_gpqa_diamond  # noqa: F401
 from src.tasks.ceval import load_ceval  # noqa: F401
+from src.tasks.DAPO_Math_17k_Processed import load_DAPO_Math_17k_Processed  # noqa: F401
 
 __all__ = [
     "DATASETS",
@@ -46,4 +47,5 @@ __all__ = [
     "load_ifeval",
     "load_gpqa_diamond",
     "load_ceval",
+    "load_DAPO_Math_17k_Processed",
 ]
