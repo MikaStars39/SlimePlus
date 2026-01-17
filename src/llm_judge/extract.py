@@ -6,7 +6,6 @@ def prepare_extraction_data(
     input_file: Path,
     output_file: Path,
     output_no_eval_file: Path,
-    prompt_template: Optional[str] = None
 ):
     """
     Read inference results and prepare prompts for answer extraction.
@@ -17,19 +16,17 @@ def prepare_extraction_data(
         output_no_eval_file: Path,
         prompt_template: Custom prompt template for extraction
     """
-    if prompt_template is None:
-        prompt_template = (
-            "Here is part of easoning process from another model:\n{response}\n\n"
-            "Please extract the final answer from the following reasoning process. "
-            "Respond only with the answer wrapped in \\boxed{}.\n\n"
-            "You should ONLY output \\boxed{{answer}} format. Do not think, or CoT. Do not output anything else. Just the answer.\n\n"
-            "Here is an example of the correct output format: \\boxed{{123}}.\n\n"
-            "Here is an example of the incorrect output format: 123.\n\n"
-            "Here is an example of the incorrect output format: $123$.\n\n"
-            "Here is an example of the incorrect output format: $123$.\n\n"
-            "Now you will start to extract the answer."
-        )
-    
+    prompt_template = (
+        "Reference Format (Ground Truth): {label}\n\n"
+        "Model Reasoning Process:\n{response}\n\n"
+        "Task: Extract the final answer from the reasoning process above.\n"
+        "Instructions:\n"
+        "1. Follow the style/format of the Reference Format.\n"
+        "2. DO NOT correct any mistakes. Extract what the model actually concluded, even if wrong.\n"
+        "3. DO NOT simplify the answer. If the model concludes with an equation (e.g., 'x = 0'), extract the FULL equation: \\boxed{{x = 0}}, NOT just \\boxed{{0}}.\n"
+        "4. You can do short analysis for the answer. Your final response should ONLY with \\boxed{{answer}} format."
+    )
+
     no_eval_data = []
 
     with open(input_file, "r", encoding="utf-8") as f_in, open(output_file, "w", encoding="utf-8") as f_out:
@@ -48,8 +45,11 @@ def prepare_extraction_data(
             
             data.pop("response")
 
-            # prepare the prompt for the LLM extraction
-            data["prompt"] = prompt_template.replace("{response}", str(raw_res)[:1000]) # for math, the answer is in the end.
+            # Prepare prompt using label as reference; do not correct model's reasoning errors
+            data["prompt"] = prompt_template.format(
+                response=str(raw_res),
+                label=data.get("label", "N/A")
+            )
             f_out.write(json.dumps(data, ensure_ascii=False) + "\n")
     
     with open(output_no_eval_file, "w", encoding="utf-8") as f_out:

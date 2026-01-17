@@ -19,10 +19,19 @@ async def run_offline_async_inference(
     flush_every_n: int = 1,
     flush_interval_s: Optional[float] = None,
     resume: bool = False,
+    # Speculative Decoding Parameters
+    speculative_algorithm: Optional[str] = None,
+    speculative_draft_model_path: Optional[str] = None,
+    speculative_num_steps: Optional[int] = None,
+    speculative_eagle_topk: Optional[int] = None,
+    speculative_num_draft_tokens: Optional[int] = None,
 ):
 
     if sampling_params is None:
         raise ValueError("sampling_params is required")
+
+    # Set environment variable for longer context if needed
+    os.environ["SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN"] = "1"
 
     def _extract_token_counts(output: Dict[str, Any]) -> Tuple[Optional[int], Optional[int], Optional[int]]:
         """
@@ -66,7 +75,13 @@ async def run_offline_async_inference(
         mem_fraction_static=mem_fraction_static,
         log_level="info",
         disable_radix_cache=True, # Set based on your specific needs (e.g., usually True for eval/benchmarks)
-        trust_remote_code=True
+        trust_remote_code=True,
+        # Pass speculative decoding parameters
+        speculative_algorithm=speculative_algorithm,
+        speculative_draft_model_path=speculative_draft_model_path,
+        speculative_num_steps=speculative_num_steps,
+        speculative_eagle_topk=speculative_eagle_topk,
+        speculative_num_draft_tokens=speculative_num_draft_tokens,
     )
 
     # Throughput accounting
@@ -276,5 +291,11 @@ if __name__ == "__main__":
         dp_size=8,
         tp_size=1,
         mem_fraction_static=0.9,
-        sampling_params=params
+        sampling_params=params,
+        # Example Speculative Decoding Config:
+        # speculative_algorithm="EAGLE3",
+        # speculative_draft_model_path="lmsys/SGLang-EAGLE3-Qwen3-30B-A3B-Instruct-2507-SpecForge-Nex",
+        # speculative_num_steps=3,
+        # speculative_eagle_topk=1,
+        # speculative_num_draft_tokens=4,
     ))

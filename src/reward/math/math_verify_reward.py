@@ -72,11 +72,14 @@ def math_judge(
         instance["pred"] = pred_ans
         instance["pass"] = False
         return instance
-
-    score, _ = grade_answer(f"${pred_ans}$", f"${label}$")
-
-    instance["pred"] = pred_ans
-    instance["pass"] = True if score == 1.0 else False
+    
+    if pred_ans == label:
+        instance["pred"] = pred_ans
+        instance["pass"] = True   
+    else:
+        score, _ = grade_answer(f"${pred_ans}$", f"${label}$")
+        instance["pred"] = pred_ans
+        instance["pass"] = True if score == 1.0 else False
 
     return instance
 
