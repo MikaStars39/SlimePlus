@@ -3,11 +3,9 @@ Reward Model Server with LLM-based answer extraction.
 
 Flow:
 1. Receive response from LLM
-2. Wrap response in extraction prompt template
-3. Convert to chat format and apply chat template
-4. Send to OnlineServingEngine to extract the answer
-5. Use judge_router to evaluate the extracted answer
-6. Return score
+2. Extract answer using OnlineServingEngine
+3. Judge extracted answer using rule-based judge_router
+4. Return score
 """
 import asyncio
 import logging
@@ -18,7 +16,7 @@ from fastapi import FastAPI, HTTPException
 
 from src.backend import OnlineServingEngine
 from src.config import parse_rm_args
-from src.llm_judge.extract import PROMPT_TEMPLATE
+from src.llm_judge import extract_answer_online
 from src.reward import judge_router
 from src.server import RewardRequest, save_request_log
 
@@ -31,37 +29,6 @@ logger = logging.getLogger("RM")
 args = None
 engine: OnlineServingEngine = None
 semaphore: asyncio.Semaphore = None
-
-
-# ------------ Answer Extraction ------------
-
-async def extract_answer(response: str, label: str) -> str:
-    """
-    Use LLM to extract the final answer from model response.
-    
-    Args:
-        response: The model's reasoning response
-        label: Ground truth label (used as reference format)
-    
-    Returns:
-        Extracted answer string from LLM
-    """
-    # 1. Build extraction prompt using template
-    extraction_prompt = PROMPT_TEMPLATE.format(response=response, label=label)
-    
-    # 2. Convert to chat message format
-    messages = [{"role": "user", "content": extraction_prompt}]
-    
-    # 3. Build sampling params from args
-    sampling_params = {
-        "temperature": args.temperature,
-        "top_p": args.top_p,
-        "max_new_tokens": args.max_new_tokens,
-    }
-    
-    # 4. Send to engine for extraction
-    extracted = await engine.chat(messages, sampling_params)
-    return extracted
 
 
 # ------------ FastAPI App ------------
@@ -80,7 +47,6 @@ async def lifespan(app: FastAPI):
         engine = eng
         logger.info("OnlineServingEngine initialized")
         yield
-        logger.info("OnlineServingEngine shutting down")
 
 
 app = FastAPI(title="RM Server", lifespan=lifespan)
@@ -88,46 +54,41 @@ app = FastAPI(title="RM Server", lifespan=lifespan)
 
 @app.post("/reward")
 async def reward_endpoint(req: RewardRequest):
-    """
-    Calculate reward for a given response.
-    
-    Steps:
-    1. Extract answer using LLM
-    2. Judge extracted answer using rule-based judge_router
-    3. Return score and result
-    """
+    """Calculate reward: extract answer with LLM, then judge with rules."""
     async with semaphore:
         try:
             # Step 1: Extract answer using LLM
-            extracted_answer = await asyncio.wait_for(
-                extract_answer(req.response, req.label),
+            sampling_params = {
+                "temperature": args.temperature,
+                "top_p": args.top_p,
+                "max_new_tokens": args.max_new_tokens,
+            }
+            extracted = await asyncio.wait_for(
+                extract_answer_online(engine, req.response, req.label, sampling_params),
                 timeout=args.timeout
             )
             
             # Step 2: Judge using rule-based router
             result = judge_router(
-                response=extracted_answer,
+                response=extracted,
                 label=req.label,
                 source=req.source,
                 **(req.metadata or {})
             )
+            result["extracted"] = extracted
             
-            # Add extracted answer to result
-            result["extracted"] = extracted_answer
-            
-            # Step 3: Calculate score
+            # Step 3: Return score
             score = 1.0 if result.get("pass", False) else 0.0
             
             # Log
             preview = req.label[:30] if req.label else ""
-            pred = result.get("pred", "N/A")
-            logger.info(f"[{req.source}] GT: {preview}... | Pred: {pred} | Score: {score}")
+            logger.info(f"[{req.source}] GT: {preview}... | Pred: {result.get('pred', 'N/A')} | Score: {score}")
             asyncio.create_task(save_request_log(args.output_dir, req, result, score))
             
             return {"score": score, "result": result}
             
         except asyncio.TimeoutError:
-            logger.error("Request timed out during answer extraction")
+            logger.error("Request timed out")
             return {"score": 0.0, "result": {"error": "timeout"}}
         except Exception as e:
             logger.error(f"Error: {e}")

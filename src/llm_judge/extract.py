@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Any
 
-PROMPT_TEMPLATE = (
+EXTRACTION_PROMPT_TEMPLATE = (
     "Reference Format (Ground Truth): {label}\n\n"
     "Model Reasoning Process:\n{response}\n\n"
     "Task: Extract the final answer from the reasoning process above.\n"
@@ -12,6 +12,37 @@ PROMPT_TEMPLATE = (
     "3. DO NOT simplify the answer. If the model concludes with an equation (e.g., 'x = 0'), extract the FULL equation: \\boxed{{x = 0}}, NOT just \\boxed{{0}}.\n"
     "4. You can do short analysis for the answer. Your final response should ONLY with \\boxed{{answer}} format."
 )
+
+# Backward compatibility alias
+PROMPT_TEMPLATE = EXTRACTION_PROMPT_TEMPLATE
+
+
+async def extract_answer_online(
+    engine,
+    response: str,
+    label: str,
+    sampling_params: Dict[str, Any],
+) -> str:
+    """
+    Use LLM to extract the final answer from model response (online serving).
+    
+    Args:
+        engine: OnlineServingEngine instance
+        response: The model's reasoning response
+        label: Ground truth label (used as reference format)
+        sampling_params: Sampling parameters for generation
+    
+    Returns:
+        Extracted answer string from LLM
+    """
+    # Build extraction prompt
+    extraction_prompt = EXTRACTION_PROMPT_TEMPLATE.format(response=response, label=label)
+    
+    # Convert to chat message format
+    messages = [{"role": "user", "content": extraction_prompt}]
+    
+    # Send to engine for extraction
+    return await engine.chat(messages, sampling_params)
 
 def prepare_extraction_data(
     input_file: Path,
@@ -47,7 +78,7 @@ def prepare_extraction_data(
             data.pop("response")
 
             # Prepare prompt using label as reference; do not correct model's reasoning errors
-            data["prompt"] = PROMPT_TEMPLATE.format(
+            data["prompt"] = EXTRACTION_PROMPT_TEMPLATE.format(
                 response=str(raw_res),
                 label=data.get("label", "N/A")
             )
