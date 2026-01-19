@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.backend.offline import run_offline_async_inference
+from src.llm_judge.llm_judge import llm_judge
 from src.utils import merge_two_jsonl_file, setup_logging
 
 
@@ -112,59 +113,21 @@ class TaskManager:
         Returns:
             Path to eval_results.jsonl
         """
-        from src.llm_judge.extract import prepare_extraction_data
-        from src.utils import apply_template_to_jsonl
-
-        logging.info(f"Using model {self.eval_model_path} for extraction.")
-        if self.paths.eval_output_file.exists():
-            logging.info(f"Eval results exist at {self.paths.eval_output_file}, skipping.")
-            return self.paths.eval_output_file
-
-        logging.info("Extracting answers using LLM...")
-        prepare_extraction_data(
-            input_file=self.paths.infer_output_file,
-            output_file=self.paths.eval_input_file,
-            output_no_eval_file=self.paths.no_eval_output_file,
+        return llm_judge(
+            eval_output_file=self.paths.eval_output_file,
+            infer_output_file=self.paths.infer_output_file,
+            eval_input_file=self.paths.eval_input_file,
+            no_eval_output_file=self.paths.no_eval_output_file,
+            eval_model_path=self.eval_model_path,
+            eval_chat_input_file=self.paths.eval_chat_input_file,
+            dp_size=self.args.dp_size,
+            tp_size=self.args.tp_size,
+            gpu_memory_utilization=self.args.gpu_memory_utilization,
+            eval_temperature=self.args.eval_temperature,
+            eval_top_p=self.args.eval_top_p,
+            eval_max_new_tokens=self.args.eval_max_new_tokens,
+            max_concurrency=self.args.max_concurrency,
         )
-
-        if os.path.getsize(self.paths.eval_input_file) == 0:
-            logging.info(
-                f"Input file {self.paths.eval_input_file} is empty, skipping LLM extraction inference."
-            )
-        else:
-            logging.info("Applying chat template to eval_input.jsonl for LLM extraction...")
-            apply_template_to_jsonl(
-                input_file=str(self.paths.eval_input_file),
-                output_file=str(self.paths.eval_chat_input_file),
-                model_path=self.eval_model_path,
-                user_template="blank", # does not need to apply any other user template
-            )
-
-            asyncio.run(
-                run_offline_async_inference(
-                    input_file=str(self.paths.eval_chat_input_file),
-                    output_file=str(self.paths.eval_output_file),
-                    model_path=self.eval_model_path,
-                    dp_size=self.args.dp_size,
-                    tp_size=self.args.tp_size,
-                    mem_fraction_static=self.args.gpu_memory_utilization,
-                    sampling_params={
-                        "temperature": self.args.eval_temperature,
-                        "top_p": self.args.eval_top_p,
-                        "max_new_tokens": self.args.eval_max_new_tokens,
-                    },
-                )
-            )
-            logging.info(
-                f"Inference completed for {self.paths.eval_chat_input_file}"
-            )
-
-        merge_two_jsonl_file(
-            file1_path=self.paths.eval_output_file,
-            file2_path=self.paths.no_eval_output_file,
-            output_path=self.paths.eval_output_file,
-        )
-        return self.paths.eval_output_file
 
     def calculate_metrics(self) -> Path:
         """
