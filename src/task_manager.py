@@ -1,13 +1,12 @@
 import argparse
 import asyncio
 import logging
-import os
-from dataclasses import dataclass
 from pathlib import Path
 
-from src.backend.offline import BatchInferenceEngine
+from src.backend import BatchInferenceEngine
+from src.config import TaskPaths
 from src.llm_judge.llm_judge import llm_judge
-from src.utils import merge_two_jsonl_file, setup_logging
+from src.utils import setup_logging
 
 # --------------------------------------------
 # 1. prepare data
@@ -19,34 +18,11 @@ from src.utils import merge_two_jsonl_file, setup_logging
 # --------------------------------------------
 
 
-@dataclass
-class TaskPaths:
-    data_file: Path
-    formatted_input_file: Path
-    infer_output_file: Path
-    eval_input_file: Path
-    eval_chat_input_file: Path
-    eval_output_file: Path
-    no_eval_output_file: Path
-    final_eval_output_file: Path
-    score_output_file: Path
-
-
 class TaskManager:
     def __init__(self, args: argparse.Namespace, result_dir: Path) -> None:
         self.args = args
         self.result_dir = Path(result_dir)
-        self.paths = TaskPaths(
-            data_file=self.result_dir / "data.jsonl",
-            formatted_input_file=self.result_dir / "data.chat.jsonl",
-            infer_output_file=self.result_dir / "inference_results.jsonl",
-            eval_input_file=self.result_dir / "eval_input.jsonl",
-            eval_chat_input_file=self.result_dir / "eval_input.chat.jsonl",
-            eval_output_file=self.result_dir / "eval_results.jsonl",
-            no_eval_output_file=self.result_dir / "no_eval_results.jsonl",
-            final_eval_output_file=self.result_dir / "final.jsonl",
-            score_output_file=self.result_dir / "score_results.jsonl",
-        )
+        self.paths = TaskPaths.from_result_dir(self.result_dir)
 
     @property
     def eval_model_path(self) -> str:
@@ -152,12 +128,12 @@ class TaskManager:
             Patn to score_output_file
             Path to final.jsonl (only metrics)
         """
-        from src.reward.reward import eval_results
+        from src.reward import eval_results
 
         eval_results(
             eval_output_file=self.paths.eval_output_file,
             score_output_file=self.paths.score_output_file,
             final_eval_output_file=self.paths.final_eval_output_file,
         )
+        
         return self.paths.final_eval_output_file
-

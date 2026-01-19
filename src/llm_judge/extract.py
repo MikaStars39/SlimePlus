@@ -2,6 +2,17 @@ import json
 from pathlib import Path
 from typing import Optional
 
+PROMPT_TEMPLATE = (
+    "Reference Format (Ground Truth): {label}\n\n"
+    "Model Reasoning Process:\n{response}\n\n"
+    "Task: Extract the final answer from the reasoning process above.\n"
+    "Instructions:\n"
+    "1. Follow the style/format of the Reference Format.\n"
+    "2. DO NOT correct any mistakes. Extract what the model actually concluded, even if wrong.\n"
+    "3. DO NOT simplify the answer. If the model concludes with an equation (e.g., 'x = 0'), extract the FULL equation: \\boxed{{x = 0}}, NOT just \\boxed{{0}}.\n"
+    "4. You can do short analysis for the answer. Your final response should ONLY with \\boxed{{answer}} format."
+)
+
 def prepare_extraction_data(
     input_file: Path,
     output_file: Path,
@@ -16,16 +27,6 @@ def prepare_extraction_data(
         output_no_eval_file: Path,
         prompt_template: Custom prompt template for extraction
     """
-    prompt_template = (
-        "Reference Format (Ground Truth): {label}\n\n"
-        "Model Reasoning Process:\n{response}\n\n"
-        "Task: Extract the final answer from the reasoning process above.\n"
-        "Instructions:\n"
-        "1. Follow the style/format of the Reference Format.\n"
-        "2. DO NOT correct any mistakes. Extract what the model actually concluded, even if wrong.\n"
-        "3. DO NOT simplify the answer. If the model concludes with an equation (e.g., 'x = 0'), extract the FULL equation: \\boxed{{x = 0}}, NOT just \\boxed{{0}}.\n"
-        "4. You can do short analysis for the answer. Your final response should ONLY with \\boxed{{answer}} format."
-    )
 
     no_eval_data = []
 
@@ -46,7 +47,7 @@ def prepare_extraction_data(
             data.pop("response")
 
             # Prepare prompt using label as reference; do not correct model's reasoning errors
-            data["prompt"] = prompt_template.format(
+            data["prompt"] = PROMPT_TEMPLATE.format(
                 response=str(raw_res),
                 label=data.get("label", "N/A")
             )
