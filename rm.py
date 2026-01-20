@@ -14,11 +14,11 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI, HTTPException
 
-from src.backend import OnlineServingEngine
-from src.config import parse_rm_args
-from src.llm_judge import extract_answer_online
-from src.reward import judge_router
-from src.server import RewardRequest, save_request_log
+from mika_eval.backend import OnlineServingEngine
+from mika_eval.config import parse_rm_args
+from mika_eval.llm_judge import extract_answer_online
+from mika_eval.reward import judge_router
+from mika_eval.server import RewardRequest, save_request_log
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 logger = logging.getLogger("RM")

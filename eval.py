@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from src.config import parse_eval_args
-from src.task_manager import TaskManager
-from src.utils import setup_logging
+from mika_eval.config import parse_eval_args
+from mika_eval.task_manager import TaskManager
+from mika_eval.utils import setup_logging
 
 
 def main() -> None:

@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mika-eval"
+version = "0.1.0"
+description = "MikaEval: A flexible evaluation framework for LLMs"
+readme = "README_zh.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Qingyu"}
+]
+keywords = ["llm", "evaluation", "inference", "sglang"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "sglang>=0.4.0",
+    "transformers>=4.40.0",
+    "tqdm>=4.66.0",
+    "aiohttp>=3.9.0",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.27.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/qingyu/mika-eval"
+Repository = "https://github.com/qingyu/mika-eval"
+
+[project.scripts]
+mika-eval = "mika_eval.cli:main"
+
+[tool.setuptools]
+packages = ["mika_eval", "mika_eval.backend", "mika_eval.reward", "mika_eval.reward.math", "mika_eval.reward.if_eval", "mika_eval.reward.if_bench", "mika_eval.tasks", "mika_eval.server", "mika_eval.llm_judge", "mika_eval.utils"]
+
+[tool.setuptools.package-data]
+mika_eval = ["py.typed"]
