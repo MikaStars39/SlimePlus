@@ -14,8 +14,9 @@ def load_klearreasoner(
     
     for idx, row in enumerate(tqdm(dataset, desc=f"Loading {dataset_name}")):
         
-        question = row["question"]
-        answer = row["answer"]
+        question = row["prompt"][0]["content"]
+        row.pop("prompt")
+        answer = row["reward_model"]["ground_truth"]
 
         for sample_idx in range(k):
             # Create a unique ID for each attempt
@@ -32,12 +33,13 @@ def load_klearreasoner(
                 "label": answer,
                 "user_template_type": "blank",
                 "system_prompt_type": None,
+                **row
             }
             
             f_out.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 if __name__ == "__main__":
-    output_dir = "/mnt/llm-train/users/explore-train/qingyu/data/KlearReasoner-MathSub-30K"
+    output_dir = "/mnt/llm-train/users/explore-train/qingyu/data/stage_1/KlearReasoner-MathSub-30K"
     load_klearreasoner(
         dataset_name="/mnt/llm-train/users/explore-train/qingyu/.cache/KlearReasoner-MathSub-30K",
         k=1,
