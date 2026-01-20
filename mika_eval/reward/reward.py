@@ -1,7 +1,7 @@
 from typing import Dict
 
-from src.reward.if_eval.if_eval import if_judge
-from src.reward.math.math_verify_reward import math_judge
+from mika_eval.reward.if_eval.if_eval import if_judge
+from mika_eval.reward.math.math_verify_reward import math_judge
 
 # ----------------------- IMPORTANT: judge router -----------------------
 # rule-based judge router that manage the judging process

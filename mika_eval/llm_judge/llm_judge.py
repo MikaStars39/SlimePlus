@@ -3,9 +3,9 @@ import logging
 import os
 from pathlib import Path
 
-from src.backend.offline import BatchInferenceEngine
-from src.llm_judge.extract import prepare_extraction_data
-from src.utils import apply_template_to_jsonl, merge_two_jsonl_file
+from mika_eval.backend.offline import BatchInferenceEngine
+from mika_eval.llm_judge.extract import prepare_extraction_data
+from mika_eval.utils import apply_template_to_jsonl, merge_two_jsonl_file
 
 
 def llm_judge(

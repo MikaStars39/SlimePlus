@@ -3,10 +3,10 @@ import asyncio
 import logging
 from pathlib import Path
 
-from src.backend import BatchInferenceEngine
-from src.config import TaskPaths
-from src.llm_judge.llm_judge import llm_judge
-from src.utils import setup_logging
+from mika_eval.backend import BatchInferenceEngine
+from mika_eval.config import TaskPaths
+from mika_eval.llm_judge.llm_judge import llm_judge
+from mika_eval.utils import setup_logging
 
 # --------------------------------------------
 # 1. prepare data
@@ -38,8 +38,8 @@ class TaskManager:
         Returns:
             Path to the formatted jsonl file used as inference input.
         """
-        from src.tasks import prepare_pass_at_k_jsonl
-        from src.utils import apply_template_to_jsonl
+        from mika_eval.tasks import prepare_pass_at_k_jsonl
+        from mika_eval.utils import apply_template_to_jsonl
 
         logging.info(f"Preparing data for {self.args.dataset}...")
         prepare_pass_at_k_jsonl(
@@ -128,7 +128,7 @@ class TaskManager:
             Patn to score_output_file
             Path to final.jsonl (only metrics)
         """
-        from src.reward import eval_results
+        from mika_eval.reward import eval_results
 
         eval_results(
             eval_output_file=self.paths.eval_output_file,

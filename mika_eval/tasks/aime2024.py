@@ -2,7 +2,7 @@ from tqdm import tqdm
 import json
 from io import TextIOWrapper
 
-from src.tasks.base import DATASETS, get_question_text, get_answer_text, load_dataset_from_hf
+from mika_eval.tasks.base import DATASETS, get_question_text, get_answer_text, load_dataset_from_hf
 
 def load_aime2024(
     dataset_name: str,

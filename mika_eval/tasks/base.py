@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 from datasets import load_dataset
 
-import src.tasks as tasks
+import mika_eval.tasks as tasks
 
 DATASETS = {
 # --------------------------- math ------------------------------

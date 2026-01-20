@@ -1,6 +1,6 @@
 
 import json
-from src.reward.if_eval.instructions_registry import INSTRUCTION_DICT
+from mika_eval.reward.if_eval.instructions_registry import INSTRUCTION_DICT
 
 def if_judge(
     response: str,

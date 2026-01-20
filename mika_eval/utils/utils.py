@@ -102,6 +102,6 @@ def display_metrics_report(metrics_data: Dict[str, Dict[str, float]]):
     print("="*60 + "\n")
 
 def calculate_and_print_metrics(eval_output_file: Path, cache_dir: str = None):
-    from src.reward.reward import extract_metrics_from_file
+    from mika_eval.reward.reward import extract_metrics_from_file
     results = extract_metrics_from_file(eval_output_file)
     display_metrics_report(results)

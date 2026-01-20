@@ -4,7 +4,7 @@ from typing import Dict, List
 from pathlib import Path
 
 from datasets import load_dataset
-from src.reward.reward import judge_router
+from mika_eval.reward.reward import judge_router
 
 def instance_judge(
     instance: Dict
