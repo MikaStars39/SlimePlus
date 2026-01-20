@@ -4,7 +4,7 @@ import time
 import os
 import subprocess
 import logging
-from typing import Optional, Dict, Any, Set
+from typing import Optional, Dict, Any, Set, List, Callable, Tuple
 from tqdm.asyncio import tqdm
 from .base import BaseSGLangEngine
 
@@ -155,5 +155,102 @@ class BatchInferenceEngine(BaseSGLangEngine):
         await self.input_queue.join()
         await self.output_queue.put(None) # Stop writer
         await tasks[1] # Wait for writer
+        
+        logger.info(f"Done. Saved to {output_file}")
+
+    # ------------------------- Multi-Turn Support ------------------------
+
+    async def _multi_turn_worker(
+        self, 
+        sampling_params: dict, 
+        turn_callback: Callable[[List[str], str], Tuple[bool, Optional[str]]],
+        max_turns: int
+    ):
+        """Handles multi-turn conversation for a single item."""
+        while True:
+            item = await self.input_queue.get()
+            if item is None:
+                self.input_queue.task_done()
+                break
+            
+            try:
+                start_t = time.perf_counter()
+                conversation: List[str] = []
+                prompt = item["prompt"]
+                total_stats = {"prompt": 0, "completion": 0, "total": 0}
+                
+                for _ in range(max_turns):
+                    output = await self._generate_safe(prompt, sampling_params)
+                    response = output["text"]
+                    conversation.append(response)
+                    
+                    # Accumulate stats
+                    stats = self._extract_stats(output)
+                    for k in total_stats: total_stats[k] += stats[k]
+                    
+                    # Check if should continue
+                    should_continue, next_prompt = turn_callback(conversation, response)
+                    if not should_continue or next_prompt is None:
+                        break
+                    prompt = next_prompt
+                
+                item["responses"] = conversation
+                item["_stats"] = total_stats
+                item["_latency"] = time.perf_counter() - start_t
+                
+                await self.output_queue.put(item)
+            except Exception as e:
+                logger.error(f"MultiTurn Worker Error: {e}")
+            finally:
+                self.input_queue.task_done()
+
+    async def run_multi_turn(
+        self, 
+        input_file: str, 
+        output_file: str, 
+        sampling_params: dict,
+        turn_callback: Callable[[List[str], str], Tuple[bool, Optional[str]]],
+        max_turns: int = 10,
+        resume: bool = False
+    ):
+        """
+        Multi-turn inference pipeline.
+        
+        Args:
+            turn_callback: (conversation_history, latest_response) -> (should_continue, next_prompt)
+                           Return (False, None) to stop, (True, prompt) to continue.
+            max_turns: Maximum turns per conversation to prevent infinite loops.
+        """
+        # 1. Resume Logic
+        existing_ids = set()
+        if resume and os.path.exists(output_file):
+            logger.info("Scanning output for resume...")
+            with open(output_file, "r") as f:
+                for line in f:
+                    try: existing_ids.add(json.loads(line).get("id"))
+                    except: pass
+        
+        # 2. Workload Check
+        total_lines = self._count_lines_fast(input_file)
+        remaining = max(0, total_lines - len(existing_ids))
+        if remaining == 0 and total_lines > 0:
+            logger.info("Nothing to do.")
+            return
+
+        # 3. Launch Tasks
+        tasks = [
+            asyncio.create_task(self._producer(input_file, existing_ids)),
+            asyncio.create_task(self._writer(output_file, remaining, resume))
+        ]
+        tasks += [
+            asyncio.create_task(self._multi_turn_worker(sampling_params, turn_callback, max_turns)) 
+            for _ in range(self.max_inflight)
+        ]
+
+        # 4. Wait
+        await tasks[0]  # Wait for producer
+        await self.input_queue.join()
+        await self.output_queue.put(None)  # Stop writer
+        await tasks[1]  # Wait for writer
         
         logger.info(f"Done. Saved to {output_file}")
