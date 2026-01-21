@@ -1,6 +1,8 @@
 import os
+import gc
 import logging
 import asyncio
+import warnings
 import sglang as sgl
 from typing import Optional, Dict, Any
 from transformers import AutoTokenizer
@@ -8,6 +10,48 @@ from transformers import AutoTokenizer
 # Configure Logger
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("SGLangBase")
+
+
+def _patch_resource_tracker():
+    """
+    Patch multiprocessing.resource_tracker to suppress harmless KeyError warnings.
+    
+    This error occurs when SGLang's child processes clean up shared memory resources
+    before the main process's resource_tracker tries to remove them from its cache.
+    The error is harmless since the resources are already properly cleaned up.
+    """
+    try:
+        from multiprocessing import resource_tracker
+        
+        # Patch the unregister function
+        _original_unregister = resource_tracker.unregister
+        def _safe_unregister(name, rtype):
+            try:
+                return _original_unregister(name, rtype)
+            except (KeyError, FileNotFoundError):
+                pass  # Resource already cleaned up
+        resource_tracker.unregister = _safe_unregister
+        
+        # Patch the ResourceTracker class methods if available
+        if hasattr(resource_tracker, 'ResourceTracker'):
+            _original_unlink = getattr(resource_tracker.ResourceTracker, '_unlink', None)
+            if _original_unlink:
+                def _safe_unlink(self, name, rtype):
+                    try:
+                        return _original_unlink(self, name, rtype)
+                    except (KeyError, FileNotFoundError):
+                        pass
+                resource_tracker.ResourceTracker._unlink = _safe_unlink
+                
+    except Exception:
+        pass  # Silently ignore if patching fails
+
+
+# Apply patches at module load time
+_patch_resource_tracker()
+
+# Suppress related warnings
+warnings.filterwarnings("ignore", message=".*resource_tracker.*")
 
 class BaseSGLangEngine:
     """
@@ -76,11 +120,22 @@ class BaseSGLangEngine:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Graceful shutdown."""
+        """Graceful shutdown with proper resource cleanup."""
         if self.llm:
             logger.info("Shutting down Engine...")
-            self.llm.shutdown()
-            await asyncio.sleep(0.5)
+            try:
+                self.llm.shutdown()
+            except Exception as e:
+                logger.warning(f"Engine shutdown warning: {e}")
+            
+            # Allow time for subprocess cleanup to prevent resource_tracker KeyError
+            await asyncio.sleep(1.0)
+            
+            # Force garbage collection to release shared memory references
+            gc.collect()
+            
+            self.llm = None
+            
         if exc_val:
             logger.error(f"Engine exited with error: {exc_val}")
 
