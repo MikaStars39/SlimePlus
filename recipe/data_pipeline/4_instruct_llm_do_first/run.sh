@@ -35,9 +35,9 @@ python recipe/data_pipeline/4_instruct_llm_do_first/llm_judge_extract.py \
     --failed /mnt/llm-train/users/explore-train/qingyu/data/stage_1/DAPO-Math-17k-Processed/raw_instruct_filter_judge_failed.jsonl
 
 python recipe/data_pipeline/4_instruct_llm_do_first/calculate_pass_at_k.py \
-    --rollout /mnt/llm-train/users/explore-train/qingyu/data/stage_1/DAPO-Math-17k-Processed/raw_instruct_filter_judge_post.jsonl \
-    --reference /mnt/llm-train/users/explore-train/qingyu/data/stage_1/DAPO-Math-17k-Processed/raw_relabel_post.jsonl \
-    --output /mnt/llm-train/users/explore-train/qingyu/data/stage_1/DAPO-Math-17k-Processed/raw_instruct_filter_pass_at_k.jsonl
+    --rollout /mnt/llm-train/users/explore-train/qingyu/data/stage_1/INTELLECT-3-RL-stem/raw_instruct_filter_judge_post.jsonl \
+    --reference /mnt/llm-train/users/explore-train/qingyu/data/stage_1/INTELLECT-3-RL-Math/raw_relabel_post.jsonl \
+    --output /mnt/llm-train/users/explore-train/qingyu/data/stage_1/INTELLECT-3-RL-stem/raw_instruct_filter_pass_at_k.jsonl
 
 python recipe/data_pipeline/4_instruct_llm_do_first/filter_by_pass_at_k.py \
     --input /mnt/llm-train/users/explore-train/qingyu/data/stage_1/DAPO-Math-17k-Processed/raw_instruct_filter_pass_at_k.jsonl \
