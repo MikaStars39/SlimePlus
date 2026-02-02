@@ -8,8 +8,8 @@
 import multiprocessing
 from typing import Any, Dict, List, Optional
 
-from mjnemogym.code_gen.lcb_integration.compute_code_generation_metrics import check_correctness
-from mjnemogym.code_gen.lcb_integration.extraction_utils import LMStyle, extract_code
+from .lcb_integration.compute_code_generation_metrics import check_correctness
+from .lcb_integration.extraction_utils import LMStyle, extract_code
 from pydantic import BaseModel
 
 

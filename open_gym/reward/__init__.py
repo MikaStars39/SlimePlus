@@ -3,8 +3,8 @@
 from .math_with_judge.score import score_fn as math_score_fn
 from .code_gen.score import score_fn as code_score_fn
 from .mcqa.score import score_fn as mcqa_score_fn
-from .instruction_following.score import score_fn as if_score_fn
-from .structured_outputs.score import score_fn as so_score_fn
+# from .instruction_following.score import score_fn as if_score_fn
+# from .structured_outputs.score import score_fn as so_score_fn
 from .workplace_assistant.score import score_fn as wa_score_fn
 
 # Map data_source values (from parquet) to score functions
@@ -13,8 +13,8 @@ score_fn_dict = {
     "nemogym_math": math_score_fn,
     "nemogym_code": code_score_fn,
     "nemogym_mcqa": mcqa_score_fn,
-    "nemogym_if": if_score_fn,
-    "nemogym_structured": so_score_fn,
+    # "nemogym_if": if_score_fn,
+    # "nemogym_structured": so_score_fn,
     "nemogym_workplace": wa_score_fn,
 }
 
@@ -48,8 +48,8 @@ __all__ = [
     "math_score_fn",
     "code_score_fn",
     "mcqa_score_fn",
-    "if_score_fn",
-    "so_score_fn",
+    # "if_score_fn",
+    # "so_score_fn",
     "wa_score_fn",
     "score_fn_dict",
     "get_score_fn",

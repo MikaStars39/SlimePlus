@@ -8,7 +8,7 @@
 import json
 from typing import Any, Dict, List
 
-from mjnemogym.workplace_assistant.utils import execute_actions_and_reset_state
+from .utils import execute_actions_and_reset_state
 
 
 def convert_strs_to_lowercase(df):
