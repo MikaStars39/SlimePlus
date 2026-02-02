@@ -1,15 +1,15 @@
 from pathlib import Path
-from mika_eval.utils import setup_logging
+from open_gym.utils import setup_logging
 
 import argparse
 import asyncio
 import logging
 from pathlib import Path
 
-from mika_eval.backend import BatchInferenceEngine
-from mika_eval.config import TaskPaths
-from mika_eval.llm_judge.llm_judge import llm_judge
-from mika_eval.utils import setup_logging
+from open_gym.backend import BatchInferenceEngine
+from open_gym.config import TaskPaths
+from open_gym.llm_judge.llm_judge import llm_judge
+from open_gym.utils import setup_logging
 
 from dataclasses import dataclass
 
@@ -111,8 +111,8 @@ class TaskManager:
         Returns:
             Path to the formatted jsonl file used as inference input.
         """
-        from mika_eval.tasks import prepare_pass_at_k_jsonl
-        from mika_eval.utils import apply_template_to_jsonl
+        from open_gym.tasks import prepare_pass_at_k_jsonl
+        from open_gym.utils import apply_template_to_jsonl
 
         logging.info(f"Preparing data for {self.args.dataset}...")
 
@@ -151,7 +151,7 @@ class TaskManager:
         model_path: str,
     ):
         
-        from mika_eval.utils import apply_template_to_jsonl
+        from open_gym.utils import apply_template_to_jsonl
         apply_template_to_jsonl(
             input_file=input_file,
             output_file=output_file,
@@ -226,7 +226,7 @@ class TaskManager:
             Patn to score_output_file
             Path to final.jsonl (only metrics)
         """
-        from mika_eval.reward import eval_results
+        from open_gym.reward import eval_results
 
         eval_results(
             eval_output_file=self.paths.eval_output_file,

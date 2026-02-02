@@ -3,7 +3,7 @@ import argparse
 import warnings
 import multiprocessing.resource_tracker
 
-from mika_eval.backend import BatchInferenceEngine
+from open_gym.backend import BatchInferenceEngine
 
 warnings.filterwarnings("ignore", message="resource_tracker: process died unexpectedly")
 warnings.filterwarnings("ignore", message="resource_tracker:.*")

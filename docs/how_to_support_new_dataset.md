@@ -29,7 +29,7 @@ DATASETS = {
 from tqdm import tqdm
 import json
 from io import TextIOWrapper
-from mika_eval.tasks.base import DATASETS, get_question_text, get_answer_text, load_dataset_from_hf
+from open_gym.tasks.base import DATASETS, get_question_text, get_answer_text, load_dataset_from_hf
 
 def load_your_dataset_name(
     dataset_name: str,
@@ -68,7 +68,7 @@ def load_your_dataset_name(
 
 ```python
 # ... 其它导入 ...
-from mika_eval.tasks.your_dataset_name import load_your_dataset_name
+from open_gym.tasks.your_dataset_name import load_your_dataset_name
 
 __all__ = [
     # ... 其它函数 ...
@@ -96,5 +96,5 @@ def judge_router(instance: Dict) -> Dict:
 完成后，你可以尝试运行数据准备脚本来验证：
 
 ```bash
-python -m mika_eval.tasks.base --config "your_dataset_name@1" --output_file "test_data.jsonl"
+python -m open_gym.tasks.base --config "your_dataset_name@1" --output_file "test_data.jsonl"
 ```

@@ -45,10 +45,10 @@ Homepage = "https://github.com/qingyu/mika-eval"
 Repository = "https://github.com/qingyu/mika-eval"
 
 [project.scripts]
-mika-eval = "mika_eval.cli:main"
+mika-eval = "open_gym.cli:main"
 
 [tool.setuptools]
-packages = ["mika_eval", "mika_eval.backend", "mika_eval.reward", "mika_eval.reward.math", "mika_eval.reward.if_eval", "mika_eval.reward.if_bench", "mika_eval.tasks", "mika_eval.server", "mika_eval.llm_judge", "mika_eval.utils"]
+packages = ["open_gym", "open_gym.backend", "open_gym.reward", "open_gym.reward.math", "open_gym.reward.if_eval", "open_gym.reward.if_bench", "open_gym.tasks", "open_gym.server", "open_gym.llm_judge", "open_gym.utils"]
 
 [tool.setuptools.package-data]
-mika_eval = ["py.typed"]
+open_gym = ["py.typed"]

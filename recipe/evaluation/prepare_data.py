@@ -12,14 +12,14 @@ import json
 import logging
 import os
 
-import mika_eval.tasks as tasks
+import open_gym.tasks as tasks
 
 from pathlib import Path
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
-from mika_eval.tasks import DATASETS
-from mika_eval.utils.template import PROMPT_TEMPLATES, SYSTEM_PROMPT_TEMPLATES
+from open_gym.tasks import DATASETS
+from open_gym.utils.template import PROMPT_TEMPLATES, SYSTEM_PROMPT_TEMPLATES
 
 
 def prepare_dataset(

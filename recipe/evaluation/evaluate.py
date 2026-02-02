@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from datasets import load_dataset
-from mika_eval.reward.reward import judge_router
+from open_gym.reward.reward import judge_router
 
 
 def judge_instance(instance: Dict) -> Dict:
