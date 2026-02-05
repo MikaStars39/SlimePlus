@@ -91,8 +91,9 @@ if __name__ == "__main__":
     # If you know that gold will only contain latex or expr (no latex env), use
     # parse(gold, extraction_config=[LatexExtractionConfig()]) or parse(gold, extraction_config=[ExprExtractionConfig()])
 
-    gold = "${1,3} \\cup {2,4}$"
-    answer = "${1,2,3,4}$"
+    gold = "x^3"
+    answer = "\\boxed{x*x} <|end_of_thought|> asdasdasda \\boxed{{x*x*x}}"
 
-    # Order here is important!
-    print(grade_answer(answer, gold))
+    print(
+        math_judge(answer, gold)
+    )
