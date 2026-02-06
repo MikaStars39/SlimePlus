@@ -6,4 +6,5 @@ python /mnt/llm-train/users/explore-train/qingyu/slimulation/slimulation/backend
   --output "/mnt/llm-train/users/explore-train/qingyu/data/arena_hard/output.jsonl" \
   --concurrency 500 \
   --temperature 1 \
-  --max-tokens 16000
+  --max-tokens 16000 \
+  --extra

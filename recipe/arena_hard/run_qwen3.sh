@@ -7,7 +7,7 @@ BASELINE_MODEL="o3-mini-2025-01-31"
 JUDGE_MODEL="gpt-4.1"
 JUDGE_DIR="$OUTPUT_DIR/judgments/$JUDGE_MODEL"
 
-JUDGE_PARALLEL=8
+JUDGE_PARALLEL=16
 JUDGE_MAX_TOKENS=16000
 JUDGE_TEMPERATURE=0
 ARENA_HARD_CONFIG="/mnt/llm-train/users/explore-train/qingyu/arena-hard-auto/config/arena-hard-v2.0.yaml"

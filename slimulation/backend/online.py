@@ -269,8 +269,6 @@ def main():
     parser.add_argument("--max-tokens", type=int, default=1024)
     parser.add_argument("--top-p", type=float, default=1.0)
     parser.add_argument("--stop", type=str, help="Stop sequence (comma separated if multiple, or raw string)")
-    parser.add_argument("--enable-thinking", action="store_true",
-                        help="Enable model thinking mode if supported by the backend")
     
     # Advanced: Allow passing a raw JSON string for obscure params (e.g. frequency_penalty)
     parser.add_argument("--extra-params", type=str, default="{}", help="JSON string for extra sampling params")
@@ -282,12 +280,9 @@ def main():
     sampling_params = {
         "temperature": args.temperature,
         "max_tokens": args.max_tokens,
-        "top_p": args.top_p,
-        "enable_thinking": False,
+        "top_p": args.top_p
     }
-    if args.enable_thinking:
-        sampling_params["enable_thinking"] = True
-
+    
     # Handle Stop tokens
     if args.stop:
         # Simple heuristic: if comma exists, split, else single string

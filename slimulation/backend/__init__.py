@@ -1,4 +1,4 @@
 from .offline import BatchInferenceEngine
-from .online import OnlineServingEngine
+from .online import OnlineBatchInferenceEngine
 
-__all__ = ["BatchInferenceEngine", "OnlineServingEngine"]
+__all__ = ["BatchInferenceEngine", "OnlineBatchInferenceEngine"]
