@@ -45,6 +45,8 @@ def _estimate_total_prompts(input_path: str):
 
     return None
 
+
+@ray.remote
 class AsyncRolloutWorker:
     def __init__(self, args):
         self.args = args
@@ -341,15 +343,6 @@ class JsonlSink:
         self._file.close()
 
 
-@ray.remote
-class RayAsyncRolloutWorker:
-    def __init__(self, args):
-        self.worker = AsyncRolloutWorker(args)
-
-    async def run(self, data_source, sink_actor):
-        return await self.worker.run(data_source=data_source, sink_actor=sink_actor)
-
-
 async def run_streaming_inference(args):
     output_jsonl = args.plus_output_path or os.path.join(args.save, "plus_output.jsonl")
     flush_every = max(1, args.plus_flush_every)
@@ -404,7 +397,7 @@ async def run_streaming_inference(args):
     args.max_pending_sink_writes = max(1, getattr(args, "plus_max_pending_sink_writes", 64))
 
     worker_actors = [
-        RayAsyncRolloutWorker.options(num_cpus=1, num_gpus=0).remote(args) for _ in range(num_workers)
+        AsyncRolloutWorker.options(num_cpus=1, num_gpus=0).remote(args) for _ in range(num_workers)
     ]
     tasks = [actor.run.remote(data_source, sink_actor) for actor in worker_actors]
     try:
