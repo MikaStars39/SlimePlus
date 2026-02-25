@@ -43,7 +43,7 @@ ROLLOUT_ARGS=(
 SGLANG_ARGS=(
    --rollout-num-gpus 64 # total rollout gpus i.e., nnodes * per_node_gpus
 
-   --prefill-num-servers 2
+   # --prefill-num-servers 2
    --rollout-num-gpus-per-engine 8
    
    # dp attention
@@ -53,8 +53,8 @@ SGLANG_ARGS=(
    --sglang-enable-dp-lm-head
 
    # enable deepep for sglang
-   --sglang-moe-a2a-backend deepep
-   --sglang-deepep-mode auto
+   # --sglang-moe-a2a-backend deepep
+   # --sglang-deepep-mode auto
    --sglang-mamba-ssm-dtype bfloat16
 
    # --sglang-speculative-algorithm EAGLE
@@ -62,12 +62,16 @@ SGLANG_ARGS=(
    # --sglang-speculative-eagle-topk 1
    # --sglang-speculative-num-draft-tokens 4
 
-   --sglang-mem-fraction-static 0.75
-   --sglang-piecewise-cuda-graph-max-tokens 8192
+   --sglang-mem-fraction-static 0.8
+   --sglang-piecewise-cuda-graph-max-tokens 4096
    --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 128)
    --sglang-load-balance-method round_robin
    --sglang-nsa-prefill-backend flashmla_sparse
    --sglang-nsa-decode-backend fa3
+   --sglang-chunked-prefill-size 8192
+
+   # --sglang-disable-radix-cache
+   # --sglang-disable-chunked-prefix-cache
 )
 
 PLUS_ARGS=(

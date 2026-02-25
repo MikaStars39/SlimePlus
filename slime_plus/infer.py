@@ -256,54 +256,10 @@ class JsonlSink:
         self.flush_every = max(1, flush_every)
         self.total_written = 0
         self.pending_since_flush = 0
-        self._progress_every = 100
-        self._started_at = time.monotonic()
-        self._progress_interval_sec = 100.0
-        self._next_progress_time = self._started_at + self._progress_interval_sec
-        self._resume_processed = 0
-        self._total_expected_samples = None
 
         output_parent = Path(output_path).parent
         output_parent.mkdir(parents=True, exist_ok=True)
         self._file = open(self.output_path, "a", encoding="utf-8")
-
-    def configure_progress(
-        self,
-        resume_processed: int,
-        total_expected_samples: int = None,
-        progress_interval_sec: float = 100.0,
-    ):
-        self._resume_processed = max(0, int(resume_processed))
-        self._total_expected_samples = (
-            int(total_expected_samples) if total_expected_samples is not None else None
-        )
-        self._progress_interval_sec = max(1.0, float(progress_interval_sec))
-        self._next_progress_time = time.monotonic() + self._progress_interval_sec
-
-    def _log_progress_if_needed(self):
-        now = time.monotonic()
-        while now >= self._next_progress_time:
-            elapsed = max(1e-6, time.monotonic() - self._started_at)
-            tps = self.total_written / elapsed
-            overall_processed = self._resume_processed + self.total_written
-            if self._total_expected_samples and self._total_expected_samples > 0:
-                pct = overall_processed / self._total_expected_samples * 100.0
-                logger.info(
-                    "-------------- Progress: %.2f%% (%s/%s), new=%s, tps=%.2f ---------------",
-                    pct,
-                    overall_processed,
-                    self._total_expected_samples,
-                    self.total_written,
-                    tps,
-                )
-            else:
-                logger.info(
-                    "-------------- Progress: processed=%s (new=%s), total=unknown, tps=%.2f --------------",
-                    overall_processed,
-                    self.total_written,
-                    tps,
-                )
-            self._next_progress_time += self._progress_interval_sec
 
     def read_resume_state(self, n_samples_per_prompt: int) -> dict:
         processed_samples = 0
@@ -326,7 +282,6 @@ class JsonlSink:
             self._file.write(json.dumps(sample, ensure_ascii=False) + "\n")
             self.total_written += 1
             self.pending_since_flush += 1
-            self._log_progress_if_needed()
             if self.pending_since_flush >= self.flush_every:
                 self._file.flush()
                 os.fsync(self._file.fileno())
@@ -366,12 +321,6 @@ async def run_streaming_inference(args):
         total_prompts * args.n_samples_per_prompt if total_prompts is not None else None
     )
 
-    await sink_actor.configure_progress.remote(
-        resume_processed=resume_state["processed_samples"],
-        total_expected_samples=total_expected_samples,
-        progress_interval_sec=progress_interval_sec,
-    )
-
     if total_expected_samples is not None:
         logger.info(
             "Progress tracking enabled: total_expected_samples=%s, resume_processed=%s, log_interval_sec=%s",
@@ -384,6 +333,45 @@ async def run_streaming_inference(args):
             "Progress tracking enabled with unknown total (input format does not support cheap counting). log_interval_sec=%s",
             progress_interval_sec,
         )
+
+    async def _periodic_progress_reporter():
+        # Driver-side periodic reporter: prints every interval even when no new samples arrive.
+        started_at = time.monotonic()
+        last_ts = started_at
+        last_written = 0
+        while True:
+            await asyncio.sleep(progress_interval_sec)
+            now = time.monotonic()
+            stats = await sink_actor.stats.remote()
+            total_written = int(stats.get("total_written", 0))
+            elapsed = max(1e-6, now - started_at)
+            window_elapsed = max(1e-6, now - last_ts)
+            avg_tps = total_written / elapsed
+            window_tps = (total_written - last_written) / window_elapsed
+            overall_processed = resume_state["processed_samples"] + total_written
+
+            if total_expected_samples is not None and total_expected_samples > 0:
+                pct = overall_processed / total_expected_samples * 100.0
+                logger.info(
+                    "-------------- Progress(timer): %.2f%% (%s/%s), new=%s, tps(avg)=%.2f, tps(window)=%.2f ---------------",
+                    pct,
+                    overall_processed,
+                    total_expected_samples,
+                    total_written,
+                    avg_tps,
+                    window_tps,
+                )
+            else:
+                logger.info(
+                    "-------------- Progress(timer): processed=%s (new=%s), total=unknown, tps(avg)=%.2f, tps(window)=%.2f ---------------",
+                    overall_processed,
+                    total_written,
+                    avg_tps,
+                    window_tps,
+                )
+
+            last_ts = now
+            last_written = total_written
 
     # Re-create data source with resume offsets.
     data_source = StreamingRolloutDataSource.options(num_cpus=1, num_gpus=0).remote(
@@ -404,9 +392,12 @@ async def run_streaming_inference(args):
         AsyncRolloutWorker.options(num_cpus=1, num_gpus=0).remote(args) for _ in range(num_workers)
     ]
     tasks = [actor.run.remote(data_source, sink_actor) for actor in worker_actors]
+    progress_task = asyncio.create_task(_periodic_progress_reporter())
     try:
         await asyncio.gather(*tasks)
     finally:
+        progress_task.cancel()
+        await asyncio.gather(progress_task, return_exceptions=True)
         try:
             await sink_actor.close.remote()
         except Exception:
