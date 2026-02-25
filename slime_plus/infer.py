@@ -165,7 +165,7 @@ class AsyncRolloutWorker:
 
         # Setup configurations
         concurrency = getattr(self.args, "concurrency", 10)
-        batch_size = getattr(self.args, "batch_size", getattr(self.args, "rollout_batch_size", 10))
+        batch_size = getattr(self.args, "batch_size", 10)
         sink_flush_size = getattr(self.args, "sink_flush_size", 32)
         max_pending_sink_writes = max(1, getattr(self.args, "max_pending_sink_writes", 64))
 
@@ -393,7 +393,7 @@ async def run_streaming_inference(args):
 
     # Inject runtime knobs used by AsyncRolloutWorker.
     args.concurrency = max(1, args.plus_worker_concurrency)
-    args.batch_size = args.plus_worker_batch_size or args.rollout_batch_size
+    args.batch_size = args.plus_worker_batch_size
     args.sink_flush_size = max(1, args.plus_sink_flush_size)
     args.max_pending_sink_writes = max(1, getattr(args, "plus_max_pending_sink_writes", 64))
 

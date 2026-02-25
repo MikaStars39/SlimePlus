@@ -31,7 +31,7 @@ if [ -z "$3" ]; then
     log_error "Usage: $0 <start_idx> <end_idx> <job_keyword>"
 fi
 
-log_info "Scanning OPD Ray Clusters in Namespace: $NAMESPACE..."
+log_info "Scanning Ray Clusters in Namespace: $NAMESPACE..."
 
 # Fetch all running pods once to minimize API calls
 ALL_PODS_RAW=$(kubectl get pods -n "$NAMESPACE" --field-selector=status.phase=Running --no-headers -o custom-columns=":metadata.name")

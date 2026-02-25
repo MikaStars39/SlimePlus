@@ -16,17 +16,19 @@ echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 # ---------------------- env and args ----------------------------
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 PROJECT_ROOT=/mnt/llm-train/users/explore-train/qingyu/SlimePlus
 SLIME_REPO_ROOT=/mnt/llm-train/users/explore-train/qingyu/slime_original
+OUTPUT_DIR=/mnt/llm-train/users/explore-train/qingyu/SlimePlus/output/deepseek-v32_8node
 PYTHONPATH=/mnt/llm-train/users/explore-train/qingyu/slime_original:/root/Megatron-LM
 
+LOG_FILE=${OUTPUT_DIR}/output.log
+mkdir -p ${OUTPUT_DIR}
 source "${PROJECT_ROOT}/examples/utils/null_args.sh"
 
 # ---------------------- running arguments ----------------------------
 
 CKPT_ARGS=(
-   --hf-checkpoint /mnt/llm-train/users/explore-train/qingyu/.cache/Qwen3-4B-Instruct-2507
+   --hf-checkpoint /mnt/llm-train/users/explore-train/qingyu/.cache/DeepSeek-V3.2/DeepSeek-V3.2
 )
 
 ROLLOUT_ARGS=(
@@ -34,6 +36,8 @@ ROLLOUT_ARGS=(
    --label-key label
    --apply-chat-template
    --rollout-shuffle
+   --rollout-max-response-len 32768
+   --rollout-temperature 0.6
 )
 
 SGLANG_ARGS=(
@@ -41,7 +45,6 @@ SGLANG_ARGS=(
 
    # --prefill-num-servers 2
    --rollout-num-gpus-per-engine 8
-   --sglang-mem-fraction-static 0.7
    
    # dp attention
    --sglang-enable-dp-attention
@@ -52,22 +55,28 @@ SGLANG_ARGS=(
    # enable deepep for sglang
    --sglang-moe-a2a-backend deepep
    --sglang-deepep-mode auto
+   --sglang-mamba-ssm-dtype bfloat16
 
    # --sglang-speculative-algorithm EAGLE
    # --sglang-speculative-num-steps 3
    # --sglang-speculative-eagle-topk 1
    # --sglang-speculative-num-draft-tokens 4
 
-   --sglang-mem-fraction-static 0.7
+   --sglang-mem-fraction-static 0.75
+   --sglang-piecewise-cuda-graph-max-tokens 8192
+   --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 128)
+   --sglang-load-balance-method round_robin
+   --sglang-nsa-prefill-backend flashmla_sparse
+   --sglang-nsa-decode-backend fa3
 )
 
 PLUS_ARGS=(
   --plus-input-path /mnt/llm-train/users/explore-train/qingyu/.cache/dapo-math-17k/dapo-math-17k.jsonl
   --plus-output-path /mnt/llm-train/users/explore-train/qingyu/SlimePlus/output/plus_output.jsonl
-  --plus-num-workers 4
-  --plus-flush-every 1000
-  --plus-worker-concurrency 1000
-  --plus-worker-batch-size 128
+  --plus-num-workers 16
+  --plus-flush-every 128
+  --plus-worker-concurrency 256
+  --plus-worker-batch-size 64
   --plus-sink-flush-size 128
 )
 
@@ -78,7 +87,7 @@ RUNTIME_ENV_JSON="{
     \"PYTHONPATH\": \"${PYTHONPATH}\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"FLASHINFER_DISABLE_VERSION_CHECK\": \"1\",
-    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
+    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
   }
 }"
 
@@ -92,4 +101,4 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${ROLLOUT_ARGS[@]} \
    ${SGLANG_ARGS[@]} \
    ${MISC_ARGS[@]} \
-   ${PLUS_ARGS[@]}
+   ${PLUS_ARGS[@]} 2>&1 | tee ${LOG_FILE}
