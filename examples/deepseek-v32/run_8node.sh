@@ -43,7 +43,7 @@ ROLLOUT_ARGS=(
 SGLANG_ARGS=(
    --rollout-num-gpus 64 # total rollout gpus i.e., nnodes * per_node_gpus
 
-   # --prefill-num-servers 2
+   --prefill-num-servers 2
    --rollout-num-gpus-per-engine 8
    
    # dp attention
@@ -78,6 +78,7 @@ PLUS_ARGS=(
   --plus-worker-concurrency 256
   --plus-worker-batch-size 64
   --plus-sink-flush-size 128
+  --plus-progress-interval-sec 30
 )
 
 # ---------------------- ray runtime ----------------------------

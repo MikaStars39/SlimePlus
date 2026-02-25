@@ -54,6 +54,12 @@ def add_plus_arguments(parser):
         default=32,
         help="Batch size sent from worker to sink actor.",
     )
+    parser.add_argument(
+        "--plus-progress-interval-sec",
+        type=float,
+        default=100.0,
+        help="Progress/TPS logging interval in seconds.",
+    )
     return parser
 
 

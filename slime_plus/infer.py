@@ -257,10 +257,11 @@ class JsonlSink:
         self.total_written = 0
         self.pending_since_flush = 0
         self._progress_every = 100
-        self._next_progress_at = 100
+        self._started_at = time.monotonic()
+        self._progress_interval_sec = 100.0
+        self._next_progress_time = self._started_at + self._progress_interval_sec
         self._resume_processed = 0
         self._total_expected_samples = None
-        self._started_at = time.monotonic()
 
         output_parent = Path(output_path).parent
         output_parent.mkdir(parents=True, exist_ok=True)
@@ -270,17 +271,18 @@ class JsonlSink:
         self,
         resume_processed: int,
         total_expected_samples: int = None,
-        progress_every: int = 100,
+        progress_interval_sec: float = 100.0,
     ):
         self._resume_processed = max(0, int(resume_processed))
         self._total_expected_samples = (
             int(total_expected_samples) if total_expected_samples is not None else None
         )
-        self._progress_every = max(1, int(progress_every))
-        self._next_progress_at = self._progress_every
+        self._progress_interval_sec = max(1.0, float(progress_interval_sec))
+        self._next_progress_time = time.monotonic() + self._progress_interval_sec
 
     def _log_progress_if_needed(self):
-        while self.total_written >= self._next_progress_at:
+        now = time.monotonic()
+        while now >= self._next_progress_time:
             elapsed = max(1e-6, time.monotonic() - self._started_at)
             tps = self.total_written / elapsed
             overall_processed = self._resume_processed + self.total_written
@@ -301,7 +303,7 @@ class JsonlSink:
                     self.total_written,
                     tps,
                 )
-            self._next_progress_at += self._progress_every
+            self._next_progress_time += self._progress_interval_sec
 
     def read_resume_state(self, n_samples_per_prompt: int) -> dict:
         processed_samples = 0
@@ -348,6 +350,7 @@ async def run_streaming_inference(args):
     output_jsonl = args.plus_output_path or os.path.join(args.save, "plus_output.jsonl")
     flush_every = max(1, args.plus_flush_every)
     num_workers = max(1, args.plus_num_workers)
+    progress_interval_sec = max(1.0, float(getattr(args, "plus_progress_interval_sec", 100.0)))
 
     sink_actor = JsonlSink.options(num_cpus=1, num_gpus=0).remote(output_jsonl, flush_every)
     resume_state = await sink_actor.read_resume_state.remote(args.n_samples_per_prompt)
@@ -366,20 +369,20 @@ async def run_streaming_inference(args):
     await sink_actor.configure_progress.remote(
         resume_processed=resume_state["processed_samples"],
         total_expected_samples=total_expected_samples,
-        progress_every=100,
+        progress_interval_sec=progress_interval_sec,
     )
 
     if total_expected_samples is not None:
         logger.info(
-            "Progress tracking enabled: total_expected_samples=%s, resume_processed=%s, log_every=%s",
+            "Progress tracking enabled: total_expected_samples=%s, resume_processed=%s, log_interval_sec=%s",
             total_expected_samples,
             resume_state["processed_samples"],
-            100,
+            progress_interval_sec,
         )
     else:
         logger.info(
-            "Progress tracking enabled with unknown total (input format does not support cheap counting). log_every=%s",
-            100,
+            "Progress tracking enabled with unknown total (input format does not support cheap counting). log_interval_sec=%s",
+            progress_interval_sec,
         )
 
     # Re-create data source with resume offsets.
