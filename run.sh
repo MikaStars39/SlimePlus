@@ -13,7 +13,7 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-PROJECT_ROOT=/mnt/llm-train/users/explore-train/qingyu/slime_plus
+PROJECT_ROOT=/mnt/llm-train/users/explore-train/qingyu/SlimePlus
 SLIME_REPO_ROOT=/mnt/llm-train/users/explore-train/qingyu/slime_original
 PYTHONPATH=/mnt/llm-train/users/explore-train/qingyu/slime_original:/root/Megatron-LM
 
@@ -41,13 +41,13 @@ SGLANG_ARGS=(
 )
 
 PLUS_ARGS=(
-  --plus-input-path /mnt/llm-train/users/explore-train/qingyu/slime_plus/examples/test.jsonl
-  --plus-output-path /mnt/llm-train/users/explore-train/qingyu/slime_plus/output/plus_output.jsonl
+  --plus-input-path /mnt/llm-train/users/explore-train/qingyu/.cache/dapo-math-17k/dapo-math-17k.jsonl
+  --plus-output-path /mnt/llm-train/users/explore-train/qingyu/SlimePlus/output/plus_output.jsonl
   --plus-num-workers 4
-  --plus-flush-every 32
-  --plus-worker-concurrency 10
-  --plus-worker-batch-size 32
-  --plus-sink-flush-size 32
+  --plus-flush-every 1000
+  --plus-worker-concurrency 1000
+  --plus-worker-batch-size 128
+  --plus-sink-flush-size 128
 )
 
 RUNTIME_ENV_JSON="{

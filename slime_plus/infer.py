@@ -8,6 +8,7 @@ from pathlib import Path
 import ray
 
 from slime.rollout.sglang_rollout import generate
+from slime.utils.http_utils import init_http_client
 from slime.utils.types import Sample
 from slime_plus.data import StreamingRolloutDataSource
 
@@ -47,6 +48,8 @@ def _estimate_total_prompts(input_path: str):
 class AsyncRolloutWorker:
     def __init__(self, args):
         self.args = args
+        # NOTE: HTTP client initialization is deferred to run() to ensure it happens
+        # within the active asyncio event loop (Ray async actor context).
 
     def _build_sampling_params(self):
         """Constructs sampling parameters based on the arguments."""
@@ -66,11 +69,8 @@ class AsyncRolloutWorker:
         """Fetches data from the data source and pushes it into the sample queue."""
         try:
             while True:
-                # Fetch a batch of data from the remote Ray data source
-                groups = await asyncio.to_thread(
-                    ray.get, 
-                    data_source.get_samples.remote(batch_size),
-                )
+                # Ray ObjectRef is awaitable under asyncio.
+                groups = await data_source.get_samples.remote(batch_size)
                 
                 # Stop producing when the data source is exhausted
                 if not groups:
@@ -118,8 +118,9 @@ class AsyncRolloutWorker:
         results: list[dict],
         sink_actor,
         sink_flush_size: int,
-        sink_batch: list,          # Passed by reference to fix the previous bug
-        pending_sink_refs: list    # Passed by reference to fix the previous bug
+        sink_batch: list,
+        pending_sink_refs: list,
+        max_pending_sink_writes: int,
     ):
         """Collects inference results and flushes them to the remote sink actor in batches."""
         while True:
@@ -142,13 +143,28 @@ class AsyncRolloutWorker:
             if len(sink_batch) >= sink_flush_size:
                 pending_sink_refs.append(sink_actor.write_batch.remote(sink_batch.copy()))
                 sink_batch.clear()
+                if len(pending_sink_refs) >= max_pending_sink_writes:
+                    # Backpressure: wait for a chunk of writes to finish so refs do not grow unbounded.
+                    num_to_wait = max(1, len(pending_sink_refs) // 2)
+                    done_refs, remaining_refs = await asyncio.to_thread(
+                        ray.wait,
+                        pending_sink_refs,
+                        num_returns=num_to_wait,
+                        timeout=None,
+                    )
+                    await asyncio.gather(*done_refs)
+                    pending_sink_refs[:] = remaining_refs
 
     async def run(self, data_source: StreamingRolloutDataSource, sink_actor=None):
         """Main execution method that orchestrates the producer-consumer pipeline."""
+        # Initialize HTTP client here to ensure it runs within the active asyncio event loop
+        init_http_client(self.args)
+
         # Setup configurations
         concurrency = getattr(self.args, "concurrency", 10)
         batch_size = getattr(self.args, "batch_size", getattr(self.args, "rollout_batch_size", 10))
         sink_flush_size = getattr(self.args, "sink_flush_size", 32)
+        max_pending_sink_writes = max(1, getattr(self.args, "max_pending_sink_writes", 64))
 
         # Initialize queues and params
         sample_queue = asyncio.Queue(maxsize=concurrency * 2)
@@ -176,7 +192,8 @@ class AsyncRolloutWorker:
             sink_actor,
             sink_flush_size,
             sink_batch,
-            pending_sink_refs
+            pending_sink_refs,
+            max_pending_sink_writes,
         ))
 
         # --------------- Pipeline Synchronization ---------------
@@ -218,9 +235,9 @@ class AsyncRolloutWorker:
             if sink_batch:
                 pending_sink_refs.append(sink_actor.write_batch.remote(sink_batch.copy()))
             
-            # Await all pending Ray RPC writes to finish
+            # Await all pending sink RPC writes to finish.
             if pending_sink_refs:
-                await asyncio.to_thread(ray.get, pending_sink_refs)
+                await asyncio.gather(*pending_sink_refs)
 
         if run_error is not None:
             raise run_error
@@ -244,6 +261,7 @@ class JsonlSink:
 
         output_parent = Path(output_path).parent
         output_parent.mkdir(parents=True, exist_ok=True)
+        self._file = open(self.output_path, "a", encoding="utf-8")
 
     def configure_progress(
         self,
@@ -299,26 +317,28 @@ class JsonlSink:
         if not samples:
             return self.total_written
 
-        with open(self.output_path, "a", encoding="utf-8") as f:
-            for sample in samples:
-                f.write(json.dumps(sample, ensure_ascii=False) + "\n")
-                self.total_written += 1
-                self.pending_since_flush += 1
-                self._log_progress_if_needed()
-                if self.pending_since_flush >= self.flush_every:
-                    f.flush()
-                    os.fsync(f.fileno())
-                    self.pending_since_flush = 0
-
-            # Ensure every batch is persisted.
-            f.flush()
-            os.fsync(f.fileno())
-            self.pending_since_flush = 0
+        for sample in samples:
+            self._file.write(json.dumps(sample, ensure_ascii=False) + "\n")
+            self.total_written += 1
+            self.pending_since_flush += 1
+            self._log_progress_if_needed()
+            if self.pending_since_flush >= self.flush_every:
+                self._file.flush()
+                os.fsync(self._file.fileno())
+                self.pending_since_flush = 0
 
         return self.total_written
 
     def stats(self) -> dict:
         return {"output_path": self.output_path, "total_written": self.total_written}
+
+    def close(self) -> None:
+        if self._file.closed:
+            return
+        self._file.flush()
+        os.fsync(self._file.fileno())
+        self.pending_since_flush = 0
+        self._file.close()
 
 
 @ray.remote
@@ -336,7 +356,7 @@ async def run_streaming_inference(args):
     num_workers = max(1, args.plus_num_workers)
 
     sink_actor = JsonlSink.options(num_cpus=1, num_gpus=0).remote(output_jsonl, flush_every)
-    resume_state = await asyncio.to_thread(ray.get, sink_actor.read_resume_state.remote(args.n_samples_per_prompt))
+    resume_state = await sink_actor.read_resume_state.remote(args.n_samples_per_prompt)
     logger.info(
         "Resume state: samples=%s prompts=%s remainder=%s",
         resume_state["processed_samples"],
@@ -348,14 +368,13 @@ async def run_streaming_inference(args):
     total_expected_samples = (
         total_prompts * args.n_samples_per_prompt if total_prompts is not None else None
     )
-    await asyncio.to_thread(
-        ray.get,
-        sink_actor.configure_progress.remote(
-            resume_processed=resume_state["processed_samples"],
-            total_expected_samples=total_expected_samples,
-            progress_every=100,
-        ),
+
+    await sink_actor.configure_progress.remote(
+        resume_processed=resume_state["processed_samples"],
+        total_expected_samples=total_expected_samples,
+        progress_every=100,
     )
+
     if total_expected_samples is not None:
         logger.info(
             "Progress tracking enabled: total_expected_samples=%s, resume_processed=%s, log_every=%s",
@@ -382,14 +401,21 @@ async def run_streaming_inference(args):
     args.concurrency = max(1, args.plus_worker_concurrency)
     args.batch_size = args.plus_worker_batch_size or args.rollout_batch_size
     args.sink_flush_size = max(1, args.plus_sink_flush_size)
+    args.max_pending_sink_writes = max(1, getattr(args, "plus_max_pending_sink_writes", 64))
 
     worker_actors = [
         RayAsyncRolloutWorker.options(num_cpus=1, num_gpus=0).remote(args) for _ in range(num_workers)
     ]
     tasks = [actor.run.remote(data_source, sink_actor) for actor in worker_actors]
-    await asyncio.to_thread(ray.get, tasks)
+    try:
+        await asyncio.gather(*tasks)
+    finally:
+        try:
+            await sink_actor.close.remote()
+        except Exception:
+            logger.exception("Failed to close JsonlSink cleanly.")
 
-    sink_stats = await asyncio.to_thread(ray.get, sink_actor.stats.remote())
+    sink_stats = await sink_actor.stats.remote()
     logger.info(
         "Streaming inference finished. Output: %s (%s samples)",
         sink_stats["output_path"],
