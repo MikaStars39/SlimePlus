@@ -26,7 +26,7 @@ MISC_ARGS=(
    --recompute-granularity full
    --recompute-method uniform
    --recompute-num-layers 1
-   --prompt-data $PROJECT_ROOT/examples/null.jsonl
+   --prompt-data $PROJECT_ROOT/examples/utils/null.jsonl
 
    # --micro-batch-size 1
    --use-dynamic-batch-size
