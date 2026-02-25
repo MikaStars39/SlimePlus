@@ -159,6 +159,7 @@ class AsyncRolloutWorker:
 
     async def run(self, data_source: StreamingRolloutDataSource, sink_actor=None):
         """Main execution method that orchestrates the producer-consumer pipeline."""
+        
         # Initialize HTTP client here to ensure it runs within the active asyncio event loop
         init_http_client(self.args)
 
@@ -286,7 +287,7 @@ class JsonlSink:
             if self._total_expected_samples and self._total_expected_samples > 0:
                 pct = overall_processed / self._total_expected_samples * 100.0
                 logger.info(
-                    "Progress: %.2f%% (%s/%s), new=%s, tps=%.2f",
+                    "-------------- Progress: %.2f%% (%s/%s), new=%s, tps=%.2f ---------------",
                     pct,
                     overall_processed,
                     self._total_expected_samples,
@@ -295,7 +296,7 @@ class JsonlSink:
                 )
             else:
                 logger.info(
-                    "Progress: processed=%s (new=%s), total=unknown, tps=%.2f",
+                    "-------------- Progress: processed=%s (new=%s), total=unknown, tps=%.2f --------------",
                     overall_processed,
                     self.total_written,
                     tps,
